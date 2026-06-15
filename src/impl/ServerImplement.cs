@@ -10,6 +10,9 @@ public class ServerImplement : ServerAbstract
     private readonly ConnectionRegistry _registry;
     private readonly WebSocketListener _listener;
     private readonly CancellationTokenSource _cts;
+    private readonly UdpSessionMap _sessionMap;
+    private readonly UdpHandshakeHandler _handshakeHandler;
+    private UdpListener? _udpListener;
 
     private ServerImplement(ServerConfig config)
     {
@@ -17,6 +20,10 @@ public class ServerImplement : ServerAbstract
         _cts = new CancellationTokenSource();
         _tokenService = new ServerTokenService(config);
         _registry = new ConnectionRegistry();
+        _sessionMap = new UdpSessionMap();
+        _registry._sessionMap = _sessionMap;
+        _handshakeHandler = new UdpHandshakeHandler(_sessionMap);
+        _registry.SubscribeRawTcp("request_udp_auth", _handshakeHandler.OnUdpAuthRequest);
         _listener = new WebSocketListener(config, _tokenService, _registry);
     }
 
@@ -24,6 +31,8 @@ public class ServerImplement : ServerAbstract
     {
         var server = new ServerImplement(config);
         _ = server._listener.StartAsync(server._cts.Token);
+        server._udpListener = new UdpListener(server._sessionMap, server._registry);
+        _ = server._udpListener.StartAsync(config.udpPort, server._cts.Token);
         return server;
     }
 
@@ -42,8 +51,12 @@ public class ServerImplement : ServerAbstract
     public override IConnection GetConnectionById(string id)
         => _registry.GetById(id) ?? throw new KeyNotFoundException($"Connection {id} not found");
 
-    public override void SendOnUdp<TData>(string subject, IConnection connection, TData data)
-        => throw new NotImplementedException("UDP not implemented yet");
+    public override async void SendOnUdp<TData>(string subject, IConnection connection, TData data)
+    {
+        var payload = ProtoSerializer.Serialize(data);
+        var envelope = new MessageEnvelope { Subject = subject, Payload = ByteString.CopyFrom(payload) };
+        await _udpListener!.SendTo(connection.Id, envelope.ToByteArray());
+    }
 
     public override async void SendOnTcp<TData>(string subject, IConnection connection, TData data)
     {
@@ -53,8 +66,17 @@ public class ServerImplement : ServerAbstract
         await conn.SendAsync(envelope.ToByteArray());
     }
 
-    public override void SendAllOnUdp<TData>(string subject, TData data)
-        => throw new NotImplementedException("UDP not implemented yet");
+    public override async void SendAllOnUdp<TData>(string subject, TData data)
+    {
+        var payload = ProtoSerializer.Serialize(data);
+        var envelope = new MessageEnvelope { Subject = subject, Payload = ByteString.CopyFrom(payload) };
+        var bytes = envelope.ToByteArray();
+        foreach (var conn in _registry.GetAll())
+        {
+            if (!string.IsNullOrEmpty(conn.UdpAddress))
+                await _udpListener!.SendTo(conn.Id, bytes);
+        }
+    }
 
     public override async void SendAllOnTcp<TData>(string subject, TData data)
     {
@@ -69,10 +91,10 @@ public class ServerImplement : ServerAbstract
     }
 
     public override ISubscribe SubscribeUdp<TData>(string subject, Action<IConnection, TData> data)
-        => throw new NotImplementedException("UDP not implemented yet");
+        => _registry.SubscribeUdpLocal(subject, data);
 
     public override ISubscribe SubscribeTcp<TData>(string subject, Action<IConnection, TData> callback)
-        => _registry.SubscribeLocal(subject, callback);
+        => _registry.SubscribeTcpLocal(subject, callback);
 
     public int WebSocketPort => _listener.Port;
 
@@ -85,6 +107,7 @@ public class ServerImplement : ServerAbstract
     public override async ValueTask DisposeAsync()
     {
         _cts.Cancel();
+        _udpListener?.StopAsync();
         await _listener.StopAsync();
         _cts.Dispose();
         GC.SuppressFinalize(this);

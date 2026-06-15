@@ -7,10 +7,14 @@ public class ConnectionRegistry
 {
     private readonly ConcurrentDictionary<string, ConnectionImplement> _connections = new();
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _subjectSubscribers = new();
-    private readonly ConcurrentDictionary<string, List<Action<IConnection, byte[]>>> _localSubscribers = new();
+    private readonly ConcurrentDictionary<string, List<Action<IConnection, byte[]>>> _tcpSubscribers = new();
+    private readonly ConcurrentDictionary<string, List<Action<IConnection, byte[]>>> _udpSubscribers = new();
     private readonly List<Action<IConnection>> _onConnectCallbacks = new();
     private readonly List<Action<IConnection>> _onDisconnectCallbacks = new();
     private readonly object _gate = new();
+#pragma warning disable CS0649
+    internal UdpSessionMap? _sessionMap;
+#pragma warning restore CS0649
 
     public void Register(ConnectionImplement connection)
     {
@@ -30,6 +34,7 @@ public class ConnectionRegistry
     {
         if (!_connections.TryRemove(connectionId, out var connection))
             return;
+        _sessionMap?.Remove(connectionId);
         foreach (var (subject, dict) in _subjectSubscribers)
         {
             dict.TryRemove(connectionId, out _);
@@ -43,6 +48,12 @@ public class ConnectionRegistry
         {
             cb(connection);
         }
+    }
+
+    public void BindUdp(string connectionId, string endpoint)
+    {
+        if (_connections.TryGetValue(connectionId, out var conn))
+            conn.UdpAddress = endpoint;
     }
 
     public ConnectionImplement? GetById(string id)
@@ -70,14 +81,14 @@ public class ConnectionRegistry
         }
     }
 
-    public ISubscribe SubscribeLocal<TData>(string subject, Action<IConnection, TData> callback)
+    public ISubscribe SubscribeTcpLocal<TData>(string subject, Action<IConnection, TData> callback)
     {
         Action<IConnection, byte[]> wrapped = (sender, rawPayload) =>
         {
             var data = ProtoSerializer.Deserialize<TData>(rawPayload);
             callback(sender, data);
         };
-        var list = _localSubscribers.GetOrAdd(subject, _ => new List<Action<IConnection, byte[]>>());
+        var list = _tcpSubscribers.GetOrAdd(subject, _ => new List<Action<IConnection, byte[]>>());
         lock (list)
         {
             list.Add(wrapped);
@@ -87,6 +98,59 @@ public class ConnectionRegistry
             lock (list)
             {
                 list.Remove(wrapped);
+            }
+        });
+    }
+
+    public ISubscribe SubscribeUdpLocal<TData>(string subject, Action<IConnection, TData> callback)
+    {
+        Action<IConnection, byte[]> wrapped = (sender, rawPayload) =>
+        {
+            var data = ProtoSerializer.Deserialize<TData>(rawPayload);
+            callback(sender, data);
+        };
+        var list = _udpSubscribers.GetOrAdd(subject, _ => new List<Action<IConnection, byte[]>>());
+        lock (list)
+        {
+            list.Add(wrapped);
+        }
+        return new UnsubscribeHandle(() =>
+        {
+            lock (list)
+            {
+                list.Remove(wrapped);
+            }
+        });
+    }
+
+    public ISubscribe SubscribeRawTcp(string subject, Action<IConnection, byte[]> callback)
+    {
+        var list = _tcpSubscribers.GetOrAdd(subject, _ => new List<Action<IConnection, byte[]>>());
+        lock (list)
+        {
+            list.Add(callback);
+        }
+        return new UnsubscribeHandle(() =>
+        {
+            lock (list)
+            {
+                list.Remove(callback);
+            }
+        });
+    }
+
+    public ISubscribe SubscribeRawUdp(string subject, Action<IConnection, byte[]> callback)
+    {
+        var list = _udpSubscribers.GetOrAdd(subject, _ => new List<Action<IConnection, byte[]>>());
+        lock (list)
+        {
+            list.Add(callback);
+        }
+        return new UnsubscribeHandle(() =>
+        {
+            lock (list)
+            {
+                list.Remove(callback);
             }
         });
     }
@@ -121,12 +185,13 @@ public class ConnectionRegistry
         });
     }
 
-    public void Route(string senderConnectionId, string subject, byte[] payload)
+    public void Route(string senderConnectionId, string subject, byte[] payload, bool fromUdp = false)
     {
         var sender = GetById(senderConnectionId);
         if (sender is null) return;
 
-        if (_localSubscribers.TryGetValue(subject, out var list))
+        var subscribers = fromUdp ? _udpSubscribers : _tcpSubscribers;
+        if (subscribers.TryGetValue(subject, out var list))
         {
             Action<IConnection, byte[]>[] snapshot;
             lock (list)
@@ -158,7 +223,8 @@ public class ConnectionRegistry
     {
         _connections.Clear();
         _subjectSubscribers.Clear();
-        _localSubscribers.Clear();
+        _tcpSubscribers.Clear();
+        _udpSubscribers.Clear();
         lock (_gate)
         {
             _onConnectCallbacks.Clear();

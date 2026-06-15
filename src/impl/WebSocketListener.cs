@@ -135,7 +135,7 @@ public class WebSocketListener
             try
             {
                 var envelope = MessageEnvelope.Parser.ParseFrom(data);
-                _registry.Route(connection.Id, envelope.Subject, envelope.Payload.ToByteArray());
+                _registry.Route(connection.Id, envelope.Subject, envelope.Payload.ToByteArray(), fromUdp: false);
             }
             catch
             {

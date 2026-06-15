@@ -11,6 +11,7 @@ public sealed class MessageEnvelope : IMessage<MessageEnvelope>
 
     public string Subject { get; set; } = "";
     public ByteString Payload { get; set; } = ByteString.Empty;
+    public ByteString SessionKey { get; set; } = ByteString.Empty;
 
     public MessageDescriptor Descriptor => null!;
 
@@ -20,6 +21,7 @@ public sealed class MessageEnvelope : IMessage<MessageEnvelope>
     {
         Subject = other.Subject;
         Payload = other.Payload;
+        SessionKey = other.SessionKey;
     }
 
     public MessageEnvelope Clone() => new(this);
@@ -28,16 +30,17 @@ public sealed class MessageEnvelope : IMessage<MessageEnvelope>
     {
         if (other is null) return false;
         if (ReferenceEquals(this, other)) return true;
-        return Subject == other.Subject && Payload == other.Payload;
+        return Subject == other.Subject && Payload == other.Payload && SessionKey == other.SessionKey;
     }
 
     public override bool Equals(object? obj) => Equals(obj as MessageEnvelope);
-    public override int GetHashCode() => HashCode.Combine(Subject, Payload);
+    public override int GetHashCode() => HashCode.Combine(Subject, Payload, SessionKey);
 
     public void MergeFrom(MessageEnvelope other)
     {
         Subject = other.Subject;
         Payload = other.Payload;
+        SessionKey = other.SessionKey;
     }
 
     public void MergeFrom(CodedInputStream input)
@@ -49,6 +52,7 @@ public sealed class MessageEnvelope : IMessage<MessageEnvelope>
             {
                 case 1: Subject = input.ReadString(); break;
                 case 2: Payload = input.ReadBytes(); break;
+                case 3: SessionKey = input.ReadBytes(); break;
                 default: input.SkipLastField(); break;
             }
         }
@@ -66,6 +70,11 @@ public sealed class MessageEnvelope : IMessage<MessageEnvelope>
             output.WriteRawTag(18);
             output.WriteBytes(Payload);
         }
+        if (SessionKey.Length != 0)
+        {
+            output.WriteRawTag(26);
+            output.WriteBytes(SessionKey);
+        }
     }
 
     public int CalculateSize()
@@ -75,6 +84,8 @@ public sealed class MessageEnvelope : IMessage<MessageEnvelope>
             size += 1 + CodedOutputStream.ComputeStringSize(Subject);
         if (Payload.Length != 0)
             size += 1 + CodedOutputStream.ComputeBytesSize(Payload);
+        if (SessionKey.Length != 0)
+            size += 1 + CodedOutputStream.ComputeBytesSize(SessionKey);
         return size;
     }
 }

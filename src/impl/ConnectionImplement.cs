@@ -9,7 +9,7 @@ public class ConnectionImplement : IConnection
     public IUser User { get; }
     public IDictionary<string, object> Attributes => _attributes;
     public bool Connected => _webSocket.State == WebSocketState.Open;
-    public string UdpAddress { get; } = "";
+    public string UdpAddress { get; set; } = "";
     public string WebSocketSessionId { get; }
     public long UdpPingTime { get; set; }
     public long WebSocketPingTime { get; set; }

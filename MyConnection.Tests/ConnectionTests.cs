@@ -17,6 +17,7 @@ public class ConnectionTests : IAsyncLifetime
         _serverConfig = new ServerConfig
         {
             websocketEndpoint = "127.0.0.1:0/ws",
+            udpPort = 0,
             jwtSecret = "test-secret-key-at-least-thirty-two-bytes-long!!",
             jwtIssuer = "test-issuer",
             jwtAudience = "test-audience"
