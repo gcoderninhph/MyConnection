@@ -12,6 +12,7 @@ public sealed class MessageEnvelope : IMessage<MessageEnvelope>
     public string Subject { get; set; } = "";
     public ByteString Payload { get; set; } = ByteString.Empty;
     public ByteString SessionKey { get; set; } = ByteString.Empty;
+    public long Ticks { get; set; }
 
     public MessageDescriptor Descriptor => null!;
 
@@ -22,6 +23,7 @@ public sealed class MessageEnvelope : IMessage<MessageEnvelope>
         Subject = other.Subject;
         Payload = other.Payload;
         SessionKey = other.SessionKey;
+        Ticks = other.Ticks;
     }
 
     public MessageEnvelope Clone() => new(this);
@@ -30,17 +32,18 @@ public sealed class MessageEnvelope : IMessage<MessageEnvelope>
     {
         if (other is null) return false;
         if (ReferenceEquals(this, other)) return true;
-        return Subject == other.Subject && Payload == other.Payload && SessionKey == other.SessionKey;
+        return Subject == other.Subject && Payload == other.Payload && SessionKey == other.SessionKey && Ticks == other.Ticks;
     }
 
     public override bool Equals(object? obj) => Equals(obj as MessageEnvelope);
-    public override int GetHashCode() => HashCode.Combine(Subject, Payload, SessionKey);
+    public override int GetHashCode() => HashCode.Combine(Subject, Payload, SessionKey, Ticks);
 
     public void MergeFrom(MessageEnvelope other)
     {
         Subject = other.Subject;
         Payload = other.Payload;
         SessionKey = other.SessionKey;
+        Ticks = other.Ticks;
     }
 
     public void MergeFrom(CodedInputStream input)
@@ -53,6 +56,7 @@ public sealed class MessageEnvelope : IMessage<MessageEnvelope>
                 case 1: Subject = input.ReadString(); break;
                 case 2: Payload = input.ReadBytes(); break;
                 case 3: SessionKey = input.ReadBytes(); break;
+                case 4: Ticks = input.ReadInt64(); break;
                 default: input.SkipLastField(); break;
             }
         }
@@ -75,6 +79,11 @@ public sealed class MessageEnvelope : IMessage<MessageEnvelope>
             output.WriteRawTag(26);
             output.WriteBytes(SessionKey);
         }
+        if (Ticks != 0)
+        {
+            output.WriteRawTag(32);
+            output.WriteInt64(Ticks);
+        }
     }
 
     public int CalculateSize()
@@ -86,6 +95,8 @@ public sealed class MessageEnvelope : IMessage<MessageEnvelope>
             size += 1 + CodedOutputStream.ComputeBytesSize(Payload);
         if (SessionKey.Length != 0)
             size += 1 + CodedOutputStream.ComputeBytesSize(SessionKey);
+        if (Ticks != 0)
+            size += 1 + CodedOutputStream.ComputeInt64Size(Ticks);
         return size;
     }
 }

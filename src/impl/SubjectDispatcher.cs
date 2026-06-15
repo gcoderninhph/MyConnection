@@ -6,6 +6,8 @@ public class SubjectDispatcher
 {
     private readonly ConcurrentDictionary<string, List<Action<byte[]>>> _subscribers = new();
 
+    public event Action<string>? OnEmptyDispatch;
+
     public ISubscribe Subscribe<TData>(string subject, Action<TData> callback)
     {
         Action<byte[]> wrapped = rawPayload =>
@@ -30,7 +32,10 @@ public class SubjectDispatcher
     public void Dispatch(string subject, byte[] payload)
     {
         if (!_subscribers.TryGetValue(subject, out var list))
+        {
+            OnEmptyDispatch?.Invoke(subject);
             return;
+        }
         Action<byte[]>[] snapshot;
         lock (list)
         {

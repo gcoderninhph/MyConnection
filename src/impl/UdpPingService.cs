@@ -9,6 +9,9 @@ public class UdpPingService : IDisposable
     private readonly int _timeoutMs;
     private Timer? _timer;
     private long _lastPongTime;
+    private long _lastPingSentTicks;
+
+    public long? LatestRttMs { get; private set; }
 
     public event Action? OnPingTimeout;
 
@@ -30,7 +33,8 @@ public class UdpPingService : IDisposable
         long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         long elapsed = now - _lastPongTime;
 
-        var envelope = new MessageEnvelope { Subject = "__ping__" };
+        var envelope = new MessageEnvelope { Subject = "__ping__", Ticks = now };
+        _lastPingSentTicks = now;
         try
         {
             await _udpClient.SendAsync(envelope.ToByteArray());
@@ -41,9 +45,12 @@ public class UdpPingService : IDisposable
             OnPingTimeout?.Invoke();
     }
 
-    public void OnPongReceived()
+    public void OnPongReceived(long sentTicks)
     {
-        _lastPongTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        _lastPongTime = now;
+        if (sentTicks > 0)
+            LatestRttMs = now - sentTicks;
     }
 
     public void Dispose()

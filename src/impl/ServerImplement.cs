@@ -53,17 +53,35 @@ public class ServerImplement : ServerAbstract
 
     public override async void SendOnUdp<TData>(string subject, IConnection connection, TData data)
     {
-        var payload = ProtoSerializer.Serialize(data);
-        var envelope = new MessageEnvelope { Subject = subject, Payload = ByteString.CopyFrom(payload) };
-        await _udpListener!.SendTo(connection.Id, envelope.ToByteArray());
+        try
+        {
+            var payload = ProtoSerializer.Serialize(data);
+            var envelope = new MessageEnvelope { Subject = subject, Payload = ByteString.CopyFrom(payload) };
+            await _udpListener!.SendTo(connection.Id, envelope.ToByteArray());
+        }
+        catch (InvalidOperationException)
+        {
+            _registry.FireWarning("W001", $"Gửi UDP thất bại, không có endpoint cho kết nối {connection.Id}", connection);
+        }
+        catch (Exception ex)
+        {
+            _registry.FireWarning("W002", $"Gửi UDP đến {connection.Id} thất bại", connection, ex);
+        }
     }
 
     public override async void SendOnTcp<TData>(string subject, IConnection connection, TData data)
     {
-        var payload = ProtoSerializer.Serialize(data);
-        var envelope = new MessageEnvelope { Subject = subject, Payload = ByteString.CopyFrom(payload) };
-        var conn = (ConnectionImplement)connection;
-        await conn.SendAsync(envelope.ToByteArray());
+        try
+        {
+            var payload = ProtoSerializer.Serialize(data);
+            var envelope = new MessageEnvelope { Subject = subject, Payload = ByteString.CopyFrom(payload) };
+            var conn = (ConnectionImplement)connection;
+            await conn.SendAsync(envelope.ToByteArray());
+        }
+        catch (Exception ex)
+        {
+            _registry.FireWarning("W003", $"Gửi TCP đến {connection.Id} thất bại", connection, ex);
+        }
     }
 
     public override async void SendAllOnUdp<TData>(string subject, TData data)
@@ -95,6 +113,9 @@ public class ServerImplement : ServerAbstract
 
     public override ISubscribe SubscribeTcp<TData>(string subject, Action<IConnection, TData> callback)
         => _registry.SubscribeTcpLocal(subject, callback);
+
+    public override ISubscribe OnWarning(Action<ServerWarningInfo> onWarning)
+        => _registry.OnWarning(onWarning);
 
     public int WebSocketPort => _listener.Port;
 

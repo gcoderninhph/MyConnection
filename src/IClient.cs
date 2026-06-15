@@ -14,5 +14,7 @@ namespace MyConnection
         ISubscribe SubscribeUdp<TData>(string subject, Action<TData> data);
         ISubscribe SubscribeTcp<TData>(string subject, Action<TData> data);
         ISubscribe OnDisconnect(Action onDisconnect);
+        ISubscribe OnWarning(Action<WarningInfo> onWarning);
+        long? LatestRttMs { get; }
     }
 }

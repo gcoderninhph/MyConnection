@@ -13,6 +13,7 @@
         public abstract void SendAllOnTcp<TData>(string subject, TData data);
         public abstract ISubscribe SubscribeUdp<TData>(string subject, Action<IConnection, TData> data);
         public abstract ISubscribe SubscribeTcp<TData>(string subject, Action<IConnection, TData> data);
+        public abstract ISubscribe OnWarning(Action<ServerWarningInfo> onWarning);
         public abstract ValueTask DisposeAsync();
     }
 }

@@ -1,21 +1,22 @@
-# Plan: RTT Measurement + OnWarning System
+# Kế hoạch: Đo độ trễ RTT + Hệ thống cảnh báo OnWarning
 
-## Overview
+## Tổng quan
 
-| Feature | Description |
-|---------|-------------|
-| **RTT** | `IClient.LatestRttMs` — measured automatically via existing UDP ping/pong cycle |
-| **OnWarning** | `ISubscribe OnWarning(Action<WarningInfo>)` on both `IClient` + `IServer` |
+| Tính năng | Mô tả |
+|-----------|-------|
+| **RTT** | `IClient.LatestRttMs` — tự động đo qua chu kỳ ping/pong UDP có sẵn |
+| **OnWarning** | `ISubscribe OnWarning(Action<WarningInfo>)` trên `IClient`; `ISubscribe OnWarning(Action<ServerWarningInfo>)` trên `IServer` |
 
 ---
 
-## Phase 1 — `WarningInfo` class (NEW FILE)
+## Giai đoạn 1 — Class `WarningInfo` + `ServerWarningInfo` (FILE MỚI)
 
 **`src/impl/WarningInfo.cs`**
 
 ```csharp
 namespace MyConnection;
-public sealed class WarningInfo
+
+public class WarningInfo
 {
     public string Code { get; }
     public string Message { get; }
@@ -27,106 +28,118 @@ public sealed class WarningInfo
         Exception = exception;
     }
 }
+
+public sealed class ServerWarningInfo : WarningInfo
+{
+    public IConnection? Connection { get; }
+    public ServerWarningInfo(string code, string message, IConnection? connection = null, Exception? exception = null)
+        : base(code, message, exception)
+    {
+        Connection = connection;
+    }
+}
 ```
 
+> `WarningInfo` không sealed (mở cho kế thừa). `ServerWarningInfo` sealed, thêm `IConnection?` để callback server biết kết nối nào gây ra cảnh báo.
+
 ---
 
-## Phase 2 — RTT: `MessageEnvelope` add field #4 `long Ticks`
+## Giai đoạn 2 — RTT: `MessageEnvelope` thêm field #4 `long Ticks`
 
-| Area | Change |
-|------|--------|
+| Khu vực | Thay đổi |
+|---------|----------|
 | Property | `public long Ticks { get; set; }` |
-| Clone ctor | Copy `Ticks` |
+| Clone ctor | Sao chép `Ticks` |
 | `MergeFrom` | `case 4: Ticks = input.ReadInt64(); break;` |
-| `WriteTo` | If `Ticks != 0`: `WriteRawTag(32)` + `WriteInt64(Ticks)` |
+| `WriteTo` | Nếu `Ticks != 0`: `WriteRawTag(32)` + `WriteInt64(Ticks)` |
 | `CalculateSize` | +1 + `CodedOutputStream.ComputeInt64Size(Ticks)` |
-| `Equals`/`GetHashCode` | Include `Ticks` |
+| `Equals`/`GetHashCode` | Bao gồm `Ticks` |
 
-> Protobuf field #4 is backwards-compatible — old clients ignore unknown fields.
+> Field #4 tương thích ngược — client cũ tự động bỏ qua field không biết.
 
 ---
 
-## Phase 3 — RTT: `UdpPingService` modifications
+## Giai đoạn 3 — RTT: Sửa `UdpPingService`
 
-| Change | Detail |
-|--------|--------|
-| New field `_lastPingSentTicks` | `long` — Unix ms timestamp when ping was sent |
-| `OnTick()` | Set `envelope.Ticks = now`, store `_lastPingSentTicks` |
-| `OnPongReceived(long sentTicks)` | Signature change (was parameterless). If `sentTicks > 0`: `LatestRttMs = now - sentTicks`. Still update `_lastPongTime`. |
+| Thay đổi | Chi tiết |
+|----------|----------|
+| Field mới `_lastPingSentTicks` | `long` — timestamp Unix ms khi gửi ping |
+| `OnTick()` | Gán `envelope.Ticks = now`, lưu `_lastPingSentTicks` |
+| `OnPongReceived(long sentTicks)` | Đổi signature (trước đây không tham số). Nếu `sentTicks > 0`: `LatestRttMs = now - sentTicks`. Vẫn cập nhật `_lastPongTime`. |
 | `LatestRttMs` | `public long? LatestRttMs { get; private set; }` |
 
 ---
 
-## Phase 4 — RTT: `UdpListener` echo
+## Giai đoạn 4 — RTT: `UdpListener` phản hồi
 
-In `HandleDatagram`, when `__ping__` received:
+Trong `HandleDatagram`, khi nhận `__ping__`:
 
 ```csharp
 var pongEnvelope = new MessageEnvelope
 {
     Subject = "__pong__",
-    Ticks = envelope.Ticks  // echo back
+    Ticks = envelope.Ticks  // echo ngược lại
 };
 ```
 
-Server simply echoes whatever `Ticks` value the client sent.
+Server chỉ việc echo lại giá trị `Ticks` client đã gửi.
 
 ---
 
-## Phase 5 — RTT: `ClientImplement`
+## Giai đoạn 5 — RTT: `ClientImplement`
 
-- In `HandleUdpMessage`, `__pong__` handler: pass `envelope.Ticks` to `_udpPing.OnPongReceived(envelope.Ticks)`
-- New property: `public long? LatestRttMs => _udpPing?.LatestRttMs;`
-- `ClientAbstract`: add `public abstract long? LatestRttMs { get; }`
-- `TestClient`: override returns `null` (UDP not implemented)
+- Trong `HandleUdpMessage`, handler `__pong__`: truyền `envelope.Ticks` vào `_udpPing.OnPongReceived(envelope.Ticks)`
+- Property mới: `public long? LatestRttMs => _udpPing?.LatestRttMs;`
+- `ClientAbstract`: thêm `public abstract long? LatestRttMs { get; }`
+- `TestClient`: override trả về `null` (UDP chưa được cài đặt)
 
 ---
 
-## Phase 6 — `SubjectDispatcher` empty-subscribers event
+## Giai đoạn 6 — `SubjectDispatcher` sự kiện không có subscriber
 
 ```csharp
 public event Action<string>? OnEmptyDispatch;
 ```
 
-In `Dispatch()`: when `_subscribers.TryGetValue(subject, out ...)` returns false → `OnEmptyDispatch?.Invoke(subject)`.
+Trong `Dispatch()`: khi `_subscribers.TryGetValue(subject, out ...)` trả về false → `OnEmptyDispatch?.Invoke(subject)`.
 
 ---
 
-## Phase 7 — Interfaces: `OnWarning` + `LatestRttMs`
+## Giai đoạn 7 — Interface: thêm `OnWarning` + `LatestRttMs`
 
-**`IClient.cs`** (+2 members):
+**`IClient.cs`** (+2 thành viên):
 
 ```csharp
 ISubscribe OnWarning(Action<WarningInfo> onWarning);
 long? LatestRttMs { get; }
 ```
 
-**`IServer.cs`** (+1 member):
+**`IServer.cs`** (+1 thành viên):
 
 ```csharp
-ISubscribe OnWarning(Action<WarningInfo> onWarning);
+ISubscribe OnWarning(Action<ServerWarningInfo> onWarning);
 ```
 
-**`ClientAbstract.cs`** (+2 abstract members):
+**`ClientAbstract.cs`** (+2 abstract):
 
 ```csharp
 public abstract ISubscribe OnWarning(Action<WarningInfo> onWarning);
 public abstract long? LatestRttMs { get; }
 ```
 
-**`ServerAbstract.cs`** (+1 abstract member):
+**`ServerAbstract.cs`** (+1 abstract):
 
 ```csharp
-public abstract ISubscribe OnWarning(Action<WarningInfo> onWarning);
+public abstract ISubscribe OnWarning(Action<ServerWarningInfo> onWarning);
 ```
 
 ---
 
-## Phase 8 — Client-side warning wiring (`ClientImplement`)
+## Giai đoạn 8 — Client: nối dây cảnh báo (`ClientImplement`)
 
-### Callback infrastructure
+### Hạ tầng callback
 
-Same pattern as `_onDisconnectCallbacks`:
+Cùng pattern với `_onDisconnectCallbacks`:
 
 ```csharp
 private readonly List<Action<WarningInfo>> _onWarningCallbacks = new();
@@ -140,19 +153,19 @@ private void FireWarning(string code, string message, Exception? ex = null)
 }
 ```
 
-### Warning codes
+### Mã cảnh báo client
 
-| Code | Message | Trigger Point |
-|------|---------|---------------|
-| **W001** | `"UDP ping timeout, connection may be lost"` | `OnUdpPingTimeout` — after existing re-auth logic fires |
-| **W002** | `"UDP handshake failed after 5 retries"` | `RunUdpHandshake` — after retry loop, before `TrySetException` |
-| **W003** | `"TCP send failed, WebSocket not connected"` | `SendOnTcp` — if `_ws == null \|\| _ws.State != WebSocketState.Open` |
-| **W004** | `"UDP send failed"` | `SendOnUdp` — `SendAsync` throws or `_udpClient` is null |
-| **W005** | `"WebSocket closed unexpectedly (code: {code})"` | `_ws.OnClose` — after successful connect (not during connect) |
-| **W006** | `"TCP message dropped, no subscriber for subject '{subject}'"` | Hook `_tcpDispatcher.OnEmptyDispatch` |
-| **W007** | `"UDP message dropped, no subscriber for subject '{subject}'"` | Hook `_udpDispatcher.OnEmptyDispatch` |
+| Mã | Thông điệp | Điểm kích hoạt |
+|----|-----------|----------------|
+| **W001** | `"UDP ping timeout, kết nối có thể đã mất"` | `OnUdpPingTimeout` — sau khi re-auth |
+| **W002** | `"UDP handshake thất bại sau 5 lần thử"` | `RunUdpHandshake` — sau vòng retry, trước `TrySetException` |
+| **W003** | `"Gửi TCP thất bại, WebSocket chưa kết nối"` | `SendOnTcp` — nếu `_ws == null \|\| _ws.State != WebSocketState.Open` |
+| **W004** | `"Gửi UDP thất bại"` | `SendOnUdp` — `SendAsync` ném lỗi hoặc `_udpClient` null |
+| **W005** | `"WebSocket đóng bất ngờ (mã: {code})"` | `_ws.OnClose` — sau khi đã kết nối thành công |
+| **W006** | `"Tin nhắn TCP bị rơi, không có subscriber cho subject '{subject}'"` | Hook `_tcpDispatcher.OnEmptyDispatch` |
+| **W007** | `"Tin nhắn UDP bị rơi, không có subscriber cho subject '{subject}'"` | Hook `_udpDispatcher.OnEmptyDispatch` |
 
-### Wire-up locations
+### Vị trí nối dây
 
 ```
 SendOnTcp:
@@ -165,16 +178,16 @@ SendOnUdp:
   catch (Exception ex) { FireWarning("W004", "...", ex); }
 
 OnUdpPingTimeout:
-  // After existing re-auth attempt:
+  // Sau khi re-auth:
   FireWarning("W001", "...");
 
 RunUdpHandshake:
-  // After retry loop, before TrySetException:
+  // Sau vòng retry, trước TrySetException:
   FireWarning("W002", "...");
 
 _ws.OnClose:
   if (connectTcs.Task.IsCompletedSuccessfully)
-    FireWarning("W005", $"WebSocket closed (code: {code})");
+    FireWarning("W005", $"WebSocket đã đóng (mã: {code})");
 
 Constructor / NotifyConnectUdp:
   _tcpDispatcher.OnEmptyDispatch += sub => FireWarning("W006", $"...{sub}");
@@ -183,42 +196,42 @@ Constructor / NotifyConnectUdp:
 
 ---
 
-## Phase 9 — Server-side warning wiring
+## Giai đoạn 9 — Server: nối dây cảnh báo
 
-### `ConnectionRegistry` — callback infrastructure
+### `ConnectionRegistry` — hạ tầng callback
 
 ```csharp
-private readonly List<Action<WarningInfo>> _onWarningCallbacks = new();
+private readonly List<Action<ServerWarningInfo>> _onWarningCallbacks = new();
 
-internal void FireWarning(string code, string message, Exception? ex = null)
+internal void FireWarning(string code, string message, IConnection? connection = null, Exception? ex = null)
 {
-    var info = new WarningInfo(code, message, ex);
-    Action<WarningInfo>[] snapshot;
+    var info = new ServerWarningInfo(code, message, connection, ex);
+    Action<ServerWarningInfo>[] snapshot;
     lock (_onWarningCallbacks) { snapshot = _onWarningCallbacks.ToArray(); }
     foreach (var cb in snapshot) cb(info);
 }
 
-public ISubscribe OnWarning(Action<WarningInfo> callback)
+public ISubscribe OnWarning(Action<ServerWarningInfo> callback)
 {
     lock (_onWarningCallbacks) { _onWarningCallbacks.Add(callback); }
     return new UnsubscribeHandle(() => { lock (_onWarningCallbacks) { _onWarningCallbacks.Remove(callback); } });
 }
 ```
 
-### Server warning codes
+### Mã cảnh báo server
 
-| Code | Message | Trigger Point |
-|------|---------|---------------|
-| **W001** | `"UDP send failed, no endpoint bound for connection {id}"` | `ServerImplement.SendOnUdp` — catch `InvalidOperationException` |
-| **W002** | `"UDP send to {id} failed"` | `ServerImplement.SendOnUdp` — catch generic `Exception` |
-| **W003** | `"TCP send to {id} failed"` | `ServerImplement.SendOnTcp` — catch `Exception` |
-| **W006** | `"TCP message dropped, no subscriber for subject '{subject}'"` | `ConnectionRegistry.Route(fromUdp: false)` — no subscribers |
-| **W007** | `"UDP message dropped, no subscriber for subject '{subject}'"` | `ConnectionRegistry.Route(fromUdp: true)` — no subscribers |
+| Mã | Connection? | Thông điệp | Điểm kích hoạt |
+|----|-------------|-----------|----------------|
+| **W001** | Có | `"Gửi UDP thất bại, không có endpoint cho kết nối {id}"` | `ServerImplement.SendOnUdp` — bắt `InvalidOperationException` |
+| **W002** | Có | `"Gửi UDP đến {id} thất bại"` | `ServerImplement.SendOnUdp` — bắt `Exception` chung |
+| **W003** | Có | `"Gửi TCP đến {id} thất bại"` | `ServerImplement.SendOnTcp` — bắt `Exception` |
+| **W006** | Không | `"Tin nhắn TCP bị rơi, không có subscriber cho subject '{subject}'"` | `ConnectionRegistry.Route(fromUdp: false)` — không subscriber |
+| **W007** | Không | `"Tin nhắn UDP bị rơi, không có subscriber cho subject '{subject}'"` | `ConnectionRegistry.Route(fromUdp: true)` — không subscriber |
 
-### Wire-up in `ServerImplement`
+### Nối dây trong `ServerImplement`
 
 ```csharp
-public override ISubscribe OnWarning(Action<WarningInfo> onWarning)
+public override ISubscribe OnWarning(Action<ServerWarningInfo> onWarning)
     => _registry.OnWarning(onWarning);
 
 // SendOnUdp:
@@ -232,11 +245,11 @@ public override async void SendOnUdp<TData>(string subject, IConnection connecti
     }
     catch (InvalidOperationException)
     {
-        _registry.FireWarning("W001", $"UDP send failed, no endpoint bound for connection {connection.Id}");
+        _registry.FireWarning("W001", $"Gửi UDP thất bại, không có endpoint cho kết nối {connection.Id}", connection);
     }
     catch (Exception ex)
     {
-        _registry.FireWarning("W002", $"UDP send to {connection.Id} failed", ex);
+        _registry.FireWarning("W002", $"Gửi UDP đến {connection.Id} thất bại", connection, ex);
     }
 }
 
@@ -251,12 +264,12 @@ public override async void SendOnTcp<TData>(string subject, IConnection connecti
     }
     catch (Exception ex)
     {
-        _registry.FireWarning("W003", $"TCP send to {connection.Id} failed", ex);
+        _registry.FireWarning("W003", $"Gửi TCP đến {connection.Id} thất bại", connection, ex);
     }
 }
 ```
 
-### Wire-up in `ConnectionRegistry.Route`
+### Nối dây trong `ConnectionRegistry.Route`
 
 ```csharp
 public void Route(string connectionId, string subject, byte[] payload, bool fromUdp)
@@ -266,40 +279,40 @@ public void Route(string connectionId, string subject, byte[] payload, bool from
     {
         var transport = fromUdp ? "UDP" : "TCP";
         FireWarning($"W{(fromUdp ? "007" : "006")}",
-            $"{transport} message dropped, no subscriber for subject '{subject}'");
+            $"Tin nhắn {transport} bị rơi, không có subscriber cho subject '{subject}'");
         return;
     }
-    // ... existing iterate logic
+    // ... logic duyệt subscriber hiện có
 }
 ```
 
 ---
 
-## Phase 10 — Tests
+## Giai đoạn 10 — Tests
 
-| Test | What | How |
-|------|------|-----|
-| **D1** | `OnWarning` fires `W003` when sending TCP while disconnected | Connect → disconnect → `SendOnTcp` → assert warning |
-| **D2** | `OnWarning` fires `W006` when sending TCP to subject with no subscribers | Connect → `SendOnTcp("no_sub", ...)` → assert `W006` warning with subject name |
-| **D3** | Server `OnWarning` fires when sending to subject with no subscribers | Connect → server `SendOnTcp("no_sub", conn, ...)` → assert server `W006` |
-| **D4** | `LatestRttMs` is `null` when UDP disabled | Assert `client.LatestRttMs is null` |
+| Test | Mục đích | Cách thực hiện |
+|------|----------|----------------|
+| **D1** | `OnWarning` kích hoạt `W003` khi gửi TCP lúc chưa kết nối | Tạo client → `OnWarning` → `SendOnTcp` → kiểm tra mã `W003` |
+| **D2** | `OnWarning` kích hoạt `W006` khi gửi TCP đến subject không có subscriber | Kết nối → `SendOnTcp("no_sub", ...)` → kiểm tra mã `W006` kèm tên subject |
+| **D3** | Server `OnWarning` kích hoạt khi gửi đến subject không có subscriber | Kết nối → server `SendOnTcp("no_sub", conn, ...)` → kiểm tra server `W006` |
+| **D4** | `LatestRttMs` là `null` khi UDP bị tắt | Kiểm tra `client.LatestRttMs is null` |
 
 ---
 
-## Files Modified (12) + Created (1)
+## Danh sách file: 12 sửa + 1 mới
 
-| # | File | Action |
-|---|------|--------|
-| 1 | `src/impl/WarningInfo.cs` | **NEW** |
-| 2 | `src/impl/MessageEnvelope.cs` | Add protobuf field #4 `Ticks` |
-| 3 | `src/impl/UdpPingService.cs` | RTT tracking + `LatestRttMs` |
-| 4 | `src/impl/UdpListener.cs` | Echo `Ticks` in pong |
-| 5 | `src/impl/SubjectDispatcher.cs` | Add `OnEmptyDispatch` event |
-| 6 | `src/impl/ClientImplement.cs` | Warning callbacks + `LatestRttMs` |
-| 7 | `src/impl/ConnectionRegistry.cs` | Warning callbacks + route warnings |
-| 8 | `src/impl/ServerImplement.cs` | Warning on sends + expose `OnWarning` |
+| # | File | Hành động |
+|---|------|-----------|
+| 1 | `src/impl/WarningInfo.cs` | **MỚI** |
+| 2 | `src/impl/MessageEnvelope.cs` | Thêm field #4 `Ticks` |
+| 3 | `src/impl/UdpPingService.cs` | Theo dõi RTT + `LatestRttMs` |
+| 4 | `src/impl/UdpListener.cs` | Echo `Ticks` trong pong |
+| 5 | `src/impl/SubjectDispatcher.cs` | Thêm sự kiện `OnEmptyDispatch` |
+| 6 | `src/impl/ClientImplement.cs` | Callback cảnh báo + `LatestRttMs` |
+| 7 | `src/impl/ConnectionRegistry.cs` | Callback cảnh báo + cảnh báo route |
+| 8 | `src/impl/ServerImplement.cs` | Cảnh báo khi gửi + lộ `OnWarning` |
 | 9 | `src/IClient.cs` | +`OnWarning` + `LatestRttMs` |
 | 10 | `src/IServer.cs` | +`OnWarning` |
-| 11 | `src/ClientAbstract.cs` | +2 abstract members |
-| 12 | `src/ServerAbstract.cs` | +1 abstract member |
+| 11 | `src/ClientAbstract.cs` | +2 abstract |
+| 12 | `src/ServerAbstract.cs` | +1 abstract |
 | 13 | `MyConnection.Tests/ConnectionTests.cs` | +4 tests + `TestClient` overrides |

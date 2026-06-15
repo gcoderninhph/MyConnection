@@ -272,6 +272,71 @@ public class ConnectionTests : IAsyncLifetime
         var msg = await received.Task.WaitAsync(TimeSpan.FromSeconds(5));
         msg.Value.Should().Be("after-reconnect");
     }
+
+    // ══════════════════════════════════════════════════════════
+    // D  OnWarning
+    // ══════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task D1_OnWarning_fires_W003_when_sending_TCP_before_connecting()
+    {
+        var client = IClient.Create();
+        var warning = new TaskCompletionSource<WarningInfo>();
+        client.OnWarning(w => warning.TrySetResult(w));
+
+        client.SendOnTcp("dummy", new StringValue { Value = "x" });
+
+        var w = await warning.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        w.Code.Should().Be("W003");
+    }
+
+    [Fact]
+    public async Task D2_OnWarning_fires_W006_when_receiving_subject_with_no_subscriber()
+    {
+        var connected = new TaskCompletionSource<IConnection>();
+        _server.OnConnect(conn => connected.TrySetResult(conn));
+
+        await using var client = IClient.Create();
+        await client.ConnectServer(MakeConfig(CreateToken("u1", "A")));
+        var conn = await connected.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var warning = new TaskCompletionSource<WarningInfo>();
+        client.OnWarning(w => warning.TrySetResult(w));
+
+        _server.SendOnTcp("no_sub", conn, new StringValue { Value = "x" });
+
+        var w = await warning.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        w.Code.Should().Be("W006");
+        w.Message.Should().Contain("no_sub");
+    }
+
+    [Fact]
+    public async Task D3_server_OnWarning_fires_W006_when_routing_to_subject_with_no_subscriber()
+    {
+        var connected = new TaskCompletionSource<IConnection>();
+        _server.OnConnect(conn => connected.TrySetResult(conn));
+
+        var client = CreateClient();
+        await client.ConnectServer(MakeConfig(CreateToken("u1", "A")));
+        await connected.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var warning = new TaskCompletionSource<ServerWarningInfo>();
+        _server.OnWarning(w => warning.TrySetResult(w));
+
+        client.SendOnTcp("no_sub", new StringValue { Value = "x" });
+
+        var w = await warning.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        w.Code.Should().Be("W006");
+        w.Message.Should().Contain("no_sub");
+        w.Connection.Should().BeNull();
+    }
+
+    [Fact]
+    public void D4_LatestRttMs_is_null_with_UDP_disabled()
+    {
+        var client = CreateClient();
+        client.LatestRttMs.Should().BeNull();
+    }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -284,6 +349,7 @@ internal sealed class TestClient : ClientAbstract
     private readonly SubjectDispatcher _dispatcher = new();
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly List<Action> _onDisconnectCallbacks = new();
+    private readonly List<Action<WarningInfo>> _onWarningCallbacks = new();
     private readonly object _gate = new();
     private CancellationTokenSource? _receiveCts;
 
@@ -347,6 +413,14 @@ internal sealed class TestClient : ClientAbstract
         lock (_gate) { _onDisconnectCallbacks.Add(onDisconnect); }
         return new Disposer(() => { lock (_gate) { _onDisconnectCallbacks.Remove(onDisconnect); } });
     }
+
+    public override ISubscribe OnWarning(Action<WarningInfo> onWarning)
+    {
+        lock (_gate) { _onWarningCallbacks.Add(onWarning); }
+        return new Disposer(() => { lock (_gate) { _onWarningCallbacks.Remove(onWarning); } });
+    }
+
+    public override long? LatestRttMs => null;
 
     public override async void SendOnTcp<TData>(string subject, TData data)
     {

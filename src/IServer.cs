@@ -21,5 +21,6 @@
         void SendAllOnTcp<TData>(string subject, TData data);
         ISubscribe SubscribeUdp<TData>(string subject, Action<IConnection, TData> data);
         ISubscribe SubscribeTcp<TData>(string subject, Action<IConnection, TData> data);
+        ISubscribe OnWarning(Action<ServerWarningInfo> onWarning);
     }
 }

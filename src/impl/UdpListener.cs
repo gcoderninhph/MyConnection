@@ -49,7 +49,11 @@ public class UdpListener
 
             if (envelope.Subject == "__ping__")
             {
-                var pongEnvelope = new MessageEnvelope { Subject = "__pong__" };
+                var pongEnvelope = new MessageEnvelope
+                {
+                    Subject = "__pong__",
+                    Ticks = envelope.Ticks
+                };
                 var pongBytes = pongEnvelope.ToByteArray();
                 try { await _udpClient!.SendAsync(pongBytes, pongBytes.Length, remoteEP); } catch { }
 
@@ -120,6 +124,7 @@ public class UdpListener
 
     private void RouteData(IPEndPoint remoteEP, MessageEnvelope envelope)
     {
+        if (envelope.Subject == "__ping__") return;
         var connId = _sessionMap.GetConnectionId(remoteEP);
         if (connId is null) return;
         _registry.Route(connId, envelope.Subject, envelope.Payload.ToByteArray(), fromUdp: true);

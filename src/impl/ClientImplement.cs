@@ -11,6 +11,7 @@ public class ClientImplement : ClientAbstract
     private readonly SubjectDispatcher _udpDispatcher = new();
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly List<Action> _onDisconnectCallbacks = new();
+    private readonly List<Action<WarningInfo>> _onWarningCallbacks = new();
     private readonly object _gate = new();
 
     private UdpClientWrapper? _udpClient;
@@ -24,6 +25,9 @@ public class ClientImplement : ClientAbstract
     protected override async Task ConnectWebSocket(string token, string websocketServer)
     {
         _udpReadyTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _tcpDispatcher.OnEmptyDispatch += sub => FireWarning("W006", $"Tin nhắn TCP bị rơi, không có subscriber cho subject '{sub}'");
+        _udpDispatcher.OnEmptyDispatch += sub => FireWarning("W007", $"Tin nhắn UDP bị rơi, không có subscriber cho subject '{sub}'");
 
         var uri = new Uri(
             websocketServer.Contains("://") ? websocketServer : "ws://" + websocketServer);
@@ -56,6 +60,8 @@ public class ClientImplement : ClientAbstract
                 connectTcs.TrySetException(new ConnectionFailedException($"WebSocket closed with code {code}"));
                 return;
             }
+
+            FireWarning("W005", $"WebSocket đã đóng (mã: {code})");
 
             Action[] snapshot;
             lock (_gate) { snapshot = _onDisconnectCallbacks.ToArray(); }
@@ -159,6 +165,7 @@ public class ClientImplement : ClientAbstract
         {
             if (!isReauth)
                 _udpReadyTcs.TrySetException(new ConnectionFailedException("UDP handshake timed out after 5 retries"));
+            FireWarning("W002", "UDP handshake thất bại sau 5 lần thử");
             return;
         }
 
@@ -194,6 +201,7 @@ public class ClientImplement : ClientAbstract
             await RunUdpHandshake(isReauth: true);
         }
         catch { }
+        FireWarning("W001", "UDP ping timeout, kết nối có thể đã mất");
     }
 
     private void HandleUdpMessage(byte[] data)
@@ -204,7 +212,7 @@ public class ClientImplement : ClientAbstract
 
             if (envelope.Subject == "__pong__")
             {
-                _udpPing?.OnPongReceived();
+                _udpPing?.OnPongReceived(envelope.Ticks);
                 return;
             }
 
@@ -252,6 +260,8 @@ public class ClientImplement : ClientAbstract
         _sendLock.Dispose();
     }
 
+    public override long? LatestRttMs => _udpPing?.LatestRttMs;
+
     public override ISubscribe OnDisconnect(Action onDisconnect)
     {
         lock (_gate) { _onDisconnectCallbacks.Add(onDisconnect); }
@@ -261,8 +271,31 @@ public class ClientImplement : ClientAbstract
         });
     }
 
+    public override ISubscribe OnWarning(Action<WarningInfo> onWarning)
+    {
+        lock (_gate) { _onWarningCallbacks.Add(onWarning); }
+        return new UnsubscribeHandle(() =>
+        {
+            lock (_gate) { _onWarningCallbacks.Remove(onWarning); }
+        });
+    }
+
+    private void FireWarning(string code, string message, Exception? ex = null)
+    {
+        var info = new WarningInfo(code, message, ex);
+        Action<WarningInfo>[] snapshot;
+        lock (_gate) { snapshot = _onWarningCallbacks.ToArray(); }
+        foreach (var cb in snapshot) cb(info);
+    }
+
     public override async void SendOnTcp<TData>(string subject, TData data)
     {
+        if (_ws == null || _ws.State != WebSocketState.Open)
+        {
+            FireWarning("W003", "Gửi TCP thất bại, WebSocket chưa kết nối");
+            return;
+        }
+
         var payload = ProtoSerializer.Serialize(data);
         var envelope = new MessageEnvelope
         {
@@ -284,13 +317,26 @@ public class ClientImplement : ClientAbstract
     {
         await _udpReadyTcs.Task;
 
+        if (_udpClient == null)
+        {
+            FireWarning("W004", "Gửi UDP thất bại");
+            return;
+        }
+
         var payload = ProtoSerializer.Serialize(data);
         var envelope = new MessageEnvelope
         {
             Subject = subject,
             Payload = ByteString.CopyFrom(payload)
         };
-        await _udpClient!.SendAsync(envelope.ToByteArray());
+        try
+        {
+            await _udpClient.SendAsync(envelope.ToByteArray());
+        }
+        catch (Exception ex)
+        {
+            FireWarning("W004", "Gửi UDP thất bại", ex);
+        }
     }
 
     public override ISubscribe SubscribeTcp<TData>(string subject, Action<TData> data)
