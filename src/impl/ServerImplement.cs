@@ -1,4 +1,5 @@
-﻿using Google.Protobuf;
+﻿#if NET9_0
+using Google.Protobuf;
 
 namespace MyConnection;
 
@@ -89,3 +90,4 @@ public class ServerImplement : ServerAbstract
         GC.SuppressFinalize(this);
     }
 }
+#endif

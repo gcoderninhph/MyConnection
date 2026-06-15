@@ -4,7 +4,11 @@
     {
         public static IServer Create(ServerConfig config)
         {
-            throw new NotImplementedException();
+#if NET9_0
+            return ServerImplement.Create(config);
+#else
+            throw new PlatformNotSupportedException("Server requires .NET 9.0 target.");
+#endif
         }
         IReadOnlyCollection<IConnection>  Connections { get; }
         string CreateToken(string id, string name);

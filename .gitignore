@@ -1,0 +1,17 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+*.DotSettings*
+*.nupkg
+nupkgs/
+
+## IDE
+.idea/
+.vs/
+.vscode/
+
+## Temp
+pack-*.txt
+ConsoleDemo/

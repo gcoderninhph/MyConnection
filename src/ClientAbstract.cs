@@ -9,11 +9,17 @@ namespace MyConnection
             AutoPingWebSocketAndUdpThread();
         }
 
+        public abstract Task DisconnectAsync();
+
+        public virtual async ValueTask DisposeAsync()
+        {
+            await DisconnectAsync();
+        }
+
         protected abstract Task ConnectWebSocket(string token, string websocketServer);
 
         protected abstract void NotifyConnectUdp(string token, string udpServer);
 
-        // Tự động ping lên server cả websocket và udp
         protected abstract void AutoPingWebSocketAndUdpThread();
 
         public abstract void SendOnUdp<TData>(string subject, TData data);

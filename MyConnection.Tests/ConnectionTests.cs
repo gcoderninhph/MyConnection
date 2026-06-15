@@ -29,7 +29,7 @@ public class ConnectionTests : IAsyncLifetime
     public async Task DisposeAsync()
     {
         foreach (var c in _clients)
-            await c.CloseAsync();
+            await c.DisconnectAsync();
         _clients.Clear();
         try { await _server.DisposeAsync(); } catch { }
     }
@@ -216,7 +216,7 @@ public class ConnectionTests : IAsyncLifetime
         var disconnected = new TaskCompletionSource();
         client.OnDisconnect(() => disconnected.TrySetResult());
 
-        await client.CloseAsync(); // avoid client-side websocket holding server stop
+        await client.DisconnectAsync(); // avoid client-side websocket holding server stop
         await _server.DisposeAsync();
         await disconnected.Task.WaitAsync(TimeSpan.FromSeconds(5));
     }
@@ -234,7 +234,7 @@ public class ConnectionTests : IAsyncLifetime
         var disconnected = new TaskCompletionSource<IConnection>();
         _server.OnDisconnect(dc => disconnected.TrySetResult(dc));
 
-        await client.CloseAsync();
+        await client.DisconnectAsync();
 
         var dc = await disconnected.Task.WaitAsync(TimeSpan.FromSeconds(5));
         dc.Id.Should().Be(conn.Id);
@@ -261,7 +261,7 @@ public class ConnectionTests : IAsyncLifetime
         var received = new TaskCompletionSource<StringValue>();
         client.SubscribeTcp<StringValue>("echo", msg => received.TrySetResult(msg));
 
-        await client.CloseAsync();
+        await client.DisconnectAsync();
 
         await client.ConnectServer(MakeConfig(CreateToken("u1", "A")));
         var conn2 = await connTcs2.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -376,7 +376,7 @@ internal sealed class TestClient : ClientAbstract
     public override ISubscribe SubscribeUdp<TData>(string subject, Action<TData> data)
         => throw new NotImplementedException("UDP not implemented");
 
-    public async Task CloseAsync()
+    public override async Task DisconnectAsync()
     {
         try
         {

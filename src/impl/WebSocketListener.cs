@@ -1,3 +1,4 @@
+#if NET9_0
 using System.Net;
 using System.Net.Sockets;
 using System.Net.WebSockets;
@@ -220,3 +221,4 @@ public class WebSocketListener
         public JwtUser(string id, string name) { Id = id; Name = name; }
     }
 }
+#endif

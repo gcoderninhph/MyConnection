@@ -1,3 +1,4 @@
+#if NET9_0
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using Microsoft.IdentityModel.Tokens;
@@ -60,3 +61,4 @@ public class ServerTokenService
         }
     }
 }
+#endif

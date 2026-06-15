@@ -6,6 +6,7 @@ namespace MyConnection;
 public class ClientImplement : ClientAbstract
 {
     private WebSocket? _ws;
+    private Task? _connectTask;
     private readonly SubjectDispatcher _dispatcher = new();
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly List<Action> _onDisconnectCallbacks = new();
@@ -22,17 +23,44 @@ public class ClientImplement : ClientAbstract
         };
         _ws = new WebSocket(uri.ToString(), headers);
 
-        _ws.OnOpen += () => { };
+        var connectTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _ws.OnOpen += () =>
+        {
+            connectTcs.TrySetResult(true);
+        };
+
+        _ws.OnError += (err) =>
+        {
+            if (!connectTcs.Task.IsCompletedSuccessfully)
+                connectTcs.TrySetException(new ConnectionFailedException(err ?? "Unknown connection error"));
+        };
+
         _ws.OnMessage += OnMessage;
-        _ws.OnError += (err) => { };
+
         _ws.OnClose += (code) =>
         {
+            if (!connectTcs.Task.IsCompletedSuccessfully)
+            {
+                connectTcs.TrySetException(new ConnectionFailedException($"WebSocket closed with code {code}"));
+                return;
+            }
+
             Action[] snapshot;
             lock (_gate) { snapshot = _onDisconnectCallbacks.ToArray(); }
             foreach (var cb in snapshot) cb();
         };
 
-        await _ws.Connect();
+        _connectTask = _ws.Connect();
+
+        var timeoutTask = Task.Delay(TimeSpan.FromSeconds(10));
+        var completedTask = await Task.WhenAny(connectTcs.Task, timeoutTask);
+        if (completedTask == timeoutTask)
+        {
+            _ws.CancelConnection();
+            throw new ConnectionFailedException("Connection timed out after 10 seconds");
+        }
+        await completedTask;
     }
 
     private void OnMessage(byte[] data)
@@ -51,6 +79,29 @@ public class ClientImplement : ClientAbstract
 
     protected override void AutoPingWebSocketAndUdpThread()
     {
+    }
+
+    public override async Task DisconnectAsync()
+    {
+        if (_ws != null)
+        {
+            try
+            {
+                await _ws.Close();
+            }
+            catch { }
+        }
+
+        if (_connectTask != null)
+        {
+            try { await _connectTask; } catch { }
+        }
+    }
+
+    public override async ValueTask DisposeAsync()
+    {
+        await DisconnectAsync();
+        _sendLock.Dispose();
     }
 
     public override ISubscribe OnDisconnect(Action onDisconnect)
