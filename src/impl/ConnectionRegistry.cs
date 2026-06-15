@@ -82,7 +82,7 @@ public class ConnectionRegistry
         }
     }
 
-    public ISubscribe SubscribeTcpLocal<TData>(string subject, Action<IConnection, TData> callback)
+    public ISubscribe SubscribeTcpLocal<TData>(string subject, Action<IConnection, TData> callback) where TData : IMessage<TData>
     {
         Action<IConnection, byte[]> wrapped = (sender, rawPayload) =>
         {
@@ -103,7 +103,7 @@ public class ConnectionRegistry
         });
     }
 
-    public ISubscribe SubscribeUdpLocal<TData>(string subject, Action<IConnection, TData> callback)
+    public ISubscribe SubscribeUdpLocal<TData>(string subject, Action<IConnection, TData> callback) where TData : IMessage<TData>
     {
         Action<IConnection, byte[]> wrapped = (sender, rawPayload) =>
         {

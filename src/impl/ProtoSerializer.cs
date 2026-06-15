@@ -4,21 +4,13 @@ namespace MyConnection;
 
 public static class ProtoSerializer
 {
-    public static byte[] Serialize<T>(T message)
+    public static byte[] Serialize<T>(T message) where T : IMessage<T>
     {
-        var msg = (message as IMessage)
-            ?? throw new InvalidOperationException(
-                $"TData '{typeof(T).Name}' must implement Google.Protobuf.IMessage");
-        return msg.ToByteArray();
+        return message.ToByteArray();
     }
 
-    public static T Deserialize<T>(byte[] data)
+    public static T Deserialize<T>(byte[] data) where T : IMessage<T>
     {
-        var instance = Activator.CreateInstance<T>();
-        var msg = (instance as IMessage)
-            ?? throw new InvalidOperationException(
-                $"TData '{typeof(T).Name}' must implement Google.Protobuf.IMessage");
-        msg.MergeFrom(new CodedInputStream(data));
-        return instance;
+        return new MessageParser<T>(() => (T)Activator.CreateInstance(typeof(T))!).ParseFrom(data);
     }
 }

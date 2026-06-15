@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package myconnection;
+
+option csharp_namespace = "MyConnection";
+
+message MessageEnvelope {
+  string subject = 1;
+  bytes payload = 2;
+  bytes session_key = 3;
+  int64 ticks = 4;
+}

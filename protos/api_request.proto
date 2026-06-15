@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package myconnection;
+
+option csharp_namespace = "MyConnection";
+
+message ApiRequest {
+  string subject = 1;
+  bytes payload = 2;
+  bool compressed = 3;
+  bool has_payload = 4;
+  string token = 5;
+}

@@ -1,5 +1,9 @@
 ﻿using Google.Protobuf;
 using NativeWebSocket;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.IO.Compression;
+using System.Text;
 
 namespace MyConnection;
 
@@ -22,12 +26,23 @@ public class ClientImplement : ClientAbstract
     private int _udpPingIntervalMs;
     private int _udpPingTimeoutMs;
 
-    protected override async Task ConnectWebSocket(string token, string websocketServer)
+    private HttpClient? _http;
+    private Func<Task<byte[]>>? _reLoginFactory;
+    private object? _loginDataFactory;
+
+    public ClientImplement(ClientConfig config)
     {
-        _udpReadyTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _config = config;
+        _udpPingIntervalMs = config.udpPingIntervalMs > 0 ? config.udpPingIntervalMs : 5000;
+        _udpPingTimeoutMs = config.udpPingTimeoutMs > 0 ? config.udpPingTimeoutMs : 15000;
 
         _tcpDispatcher.OnEmptyDispatch += sub => FireWarning("W006", $"Tin nhắn TCP bị rơi, không có subscriber cho subject '{sub}'");
         _udpDispatcher.OnEmptyDispatch += sub => FireWarning("W007", $"Tin nhắn UDP bị rơi, không có subscriber cho subject '{sub}'");
+    }
+
+    protected override async Task ConnectWebSocket(string token, string websocketServer)
+    {
+        _udpReadyTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var uri = new Uri(
             websocketServer.Contains("://") ? websocketServer : "ws://" + websocketServer);
@@ -88,7 +103,7 @@ public class ClientImplement : ClientAbstract
 
             if (envelope.Subject == "__udp_auth__")
             {
-                var key = System.Text.Encoding.UTF8.GetString(envelope.Payload.ToByteArray());
+                var key = Encoding.UTF8.GetString(envelope.Payload.ToByteArray());
                 _udpAuthKeyTcs?.TrySetResult(key);
                 return;
             }
@@ -107,9 +122,6 @@ public class ClientImplement : ClientAbstract
     protected override async void NotifyConnectUdp(string token, string udpServer)
     {
         if (string.IsNullOrEmpty(udpServer)) return;
-
-        _udpPingIntervalMs = _udpPingIntervalMs > 0 ? _udpPingIntervalMs : 5000;
-        _udpPingTimeoutMs = _udpPingTimeoutMs > 0 ? _udpPingTimeoutMs : 15000;
 
         try
         {
@@ -144,7 +156,7 @@ public class ClientImplement : ClientAbstract
             return;
         }
 
-        var keyBytes = ByteString.CopyFrom(System.Text.Encoding.UTF8.GetBytes(key));
+        var keyBytes = ByteString.CopyFrom(Encoding.UTF8.GetBytes(key));
 
         for (int i = 0; i < 5; i++)
         {
@@ -225,6 +237,148 @@ public class ClientImplement : ClientAbstract
     {
     }
 
+    public override bool IsConnected => _ws?.State == WebSocketState.Open;
+
+    public override async Task<IUser> Login<TData>(Func<TData> data)
+    {
+        return await LoginImpl<TData>(() => Task.FromResult(data()));
+    }
+
+    public override async Task<IUser> Login<TData>(Func<Task<TData>> data)
+    {
+        return await LoginImpl(data);
+    }
+
+    private async Task<IUser> LoginImpl<TData>(Func<Task<TData>> dataAsync) where TData : IMessage<TData>
+    {
+        var tcpServer = _config?.tcpServer ?? "127.0.0.1:9090";
+        var restEndpoint = _config?.restEndpoint ?? "/api";
+        var tcpSecurity = _config?.tcpSecurity ?? false;
+        var protocol = tcpSecurity ? "https" : "http";
+
+        _http ??= new HttpClient
+        {
+            BaseAddress = new Uri($"{protocol}://{tcpServer}{restEndpoint}"),
+            Timeout = TimeSpan.FromSeconds(30)
+        };
+        _http.DefaultRequestHeaders.Accept.Clear();
+        _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/octet-stream"));
+
+        var loginData = await dataAsync();
+        var payload = ProtoSerializer.Serialize(loginData);
+
+        var loginRequest = new ApiRequest
+        {
+            Subject = "__login__",
+            Payload = ByteString.CopyFrom(payload),
+            HasPayload = true
+        };
+
+        var response = await SendApiRequestExact(loginRequest);
+        if (!response.Success)
+            throw new ApiException(response.ErrorCode, response.ErrorMessage);
+
+        var loginResult = LoginResponse.Parser.ParseFrom(response.Payload);
+
+        _token = loginResult.Token;
+
+        _reLoginFactory = async () =>
+        {
+            var reData = await dataAsync();
+            var rePayload = ProtoSerializer.Serialize(reData);
+            var reRequest = new ApiRequest
+            {
+                Subject = "__login__",
+                Payload = ByteString.CopyFrom(rePayload),
+                HasPayload = true
+            };
+            var reResponse = await SendApiRequestExact(reRequest);
+            if (!reResponse.Success)
+                throw new ApiException(reResponse.ErrorCode, reResponse.ErrorMessage);
+            var reResult = LoginResponse.Parser.ParseFrom(reResponse.Payload);
+            return ProtoSerializer.Serialize(reResult);
+        };
+
+        _loginDataFactory = dataAsync;
+
+        return new UserInfo(loginResult.UserId, loginResult.UserName);
+    }
+
+    public override async Task<TResponse> GetRequest<TResponse>(string subject)
+    {
+        var request = new ApiRequest
+        {
+            Subject = subject,
+            Token = _token ?? "",
+            HasPayload = false
+        };
+
+        var response = await SendApiRequestWithRetry(request);
+        return ProtoSerializer.Deserialize<TResponse>(response.Payload.ToByteArray());
+    }
+
+    public override async Task<TResponse> PostRequest<TRequest, TResponse>(string subject, TRequest body)
+    {
+        var payload = ProtoSerializer.Serialize(body);
+        var compressedPayload = payload;
+        var compressed = false;
+
+        if (_config?.restCompressedEnable == true)
+        {
+            compressedPayload = Compress(payload);
+            compressed = true;
+        }
+
+        var request = new ApiRequest
+        {
+            Subject = subject,
+            Payload = ByteString.CopyFrom(compressedPayload),
+            Token = _token ?? "",
+            HasPayload = true,
+            Compressed = compressed
+        };
+
+        var response = await SendApiRequestWithRetry(request);
+        return ProtoSerializer.Deserialize<TResponse>(response.Payload.ToByteArray());
+    }
+
+    private async Task<ApiResponse> SendApiRequestWithRetry(ApiRequest request)
+    {
+        var response = await SendApiRequestExact(request);
+        if (!response.Success && response.ErrorCode == "TokenExpired" && _reLoginFactory is not null)
+        {
+            var loginPayloadBytes = await _reLoginFactory();
+            var loginResponse = LoginResponse.Parser.ParseFrom(loginPayloadBytes);
+            _token = loginResponse.Token;
+
+            request.Token = _token;
+            response = await SendApiRequestExact(request);
+        }
+        if (!response.Success)
+            throw new ApiException(response.ErrorCode, response.ErrorMessage);
+        return response;
+    }
+
+    private async Task<ApiResponse> SendApiRequestExact(ApiRequest request)
+    {
+        var requestBytes = request.ToByteArray();
+        using var content = new ByteArrayContent(requestBytes);
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        var httpResponse = await _http!.PostAsync("", content);
+        var responseBytes = await httpResponse.Content.ReadAsByteArrayAsync();
+        return ApiResponse.Parser.ParseFrom(responseBytes);
+    }
+
+    private static byte[] Compress(byte[] data)
+    {
+        using var output = new MemoryStream();
+        using (var deflate = new DeflateStream(output, CompressionLevel.Optimal))
+        {
+            deflate.Write(data, 0, data.Length);
+        }
+        return output.ToArray();
+    }
+
     public override async Task DisconnectAsync()
     {
         _udpPing?.Dispose();
@@ -248,11 +402,22 @@ public class ClientImplement : ClientAbstract
         {
             try { await _connectTask; } catch { }
         }
+
+        _http?.Dispose();
+        _http = null;
+    }
+
+    public override async Task Logout()
+    {
+        _token = null;
+        _reLoginFactory = null;
+        _loginDataFactory = null;
+        await DisconnectAsync();
     }
 
     public override async ValueTask DisposeAsync()
     {
-        await DisconnectAsync();
+        await Logout();
 
         if (_udpClient != null)
             await _udpClient.DisposeAsync();
@@ -350,5 +515,12 @@ public class ClientImplement : ClientAbstract
         private readonly Action _action;
         public UnsubscribeHandle(Action action) => _action = action;
         public void UnSubscribe() => _action();
+    }
+
+    private class UserInfo : IUser
+    {
+        public string Name { get; }
+        public string Id { get; }
+        public UserInfo(string id, string name) { Id = id; Name = name; }
     }
 }

@@ -1,5 +1,6 @@
 ﻿#if NET9_0
 using Google.Protobuf;
+using System.IO.Compression;
 
 namespace MyConnection;
 
@@ -14,6 +15,10 @@ public class ServerImplement : ServerAbstract
     private readonly UdpHandshakeHandler _handshakeHandler;
     private UdpListener? _udpListener;
 
+    private Func<byte[], Task<byte[]>>? _loginHandler;
+    private readonly Dictionary<string, Func<byte[], Task<byte[]>>> _getHandlers = new();
+    private readonly Dictionary<string, Func<byte[], Task<byte[]>>> _postHandlers = new();
+
     private ServerImplement(ServerConfig config)
     {
         _config = config;
@@ -24,7 +29,7 @@ public class ServerImplement : ServerAbstract
         _registry._sessionMap = _sessionMap;
         _handshakeHandler = new UdpHandshakeHandler(_sessionMap);
         _registry.SubscribeRawTcp("request_udp_auth", _handshakeHandler.OnUdpAuthRequest);
-        _listener = new WebSocketListener(config, _tokenService, _registry);
+        _listener = new WebSocketListener(config, _tokenService, _registry, HandleRestRequest);
     }
 
     public static IServer Create(ServerConfig config)
@@ -116,6 +121,99 @@ public class ServerImplement : ServerAbstract
 
     public override ISubscribe OnWarning(Action<ServerWarningInfo> onWarning)
         => _registry.OnWarning(onWarning);
+
+    public override void OnLogin<TData>(Func<TData, Task<IUser>> authLogic)
+    {
+        _loginHandler = async (payload) =>
+        {
+            var data = ProtoSerializer.Deserialize<TData>(payload);
+            var user = await authLogic(data);
+            var token = _tokenService.CreateToken(user.Id, user.Name);
+            var loginResponse = new LoginResponse
+            {
+                Token = token,
+                UserId = user.Id,
+                UserName = user.Name
+            };
+            return loginResponse.ToByteArray();
+        };
+    }
+
+    public override void OnGetRequest<TResponse>(string subject, Func<Task<TResponse>> requestLogic)
+    {
+        _getHandlers[subject] = async (_) =>
+        {
+            var result = await requestLogic();
+            return ProtoSerializer.Serialize(result);
+        };
+    }
+
+    public override void OnPostRequest<TRequest, TResponse>(string subject, Func<TRequest, Task<TResponse>> requestLogic)
+    {
+        _postHandlers[subject] = async (payload) =>
+        {
+            var request = ProtoSerializer.Deserialize<TRequest>(payload);
+            var result = await requestLogic(request);
+            return ProtoSerializer.Serialize(result);
+        };
+    }
+
+    private async Task<ApiResponse> HandleRestRequest(ApiRequest request)
+    {
+        try
+        {
+            if (request.Subject != "__login__")
+            {
+                var principal = _tokenService.ValidateToken(request.Token);
+                if (principal is null)
+                    return new ApiResponse { Success = false, ErrorCode = "TokenExpired", ErrorMessage = "Token không hợp lệ hoặc đã hết hạn" };
+            }
+
+            byte[] payload = request.Payload.ToByteArray();
+            if (request.Compressed)
+            {
+                payload = Decompress(payload);
+            }
+
+            Func<byte[], Task<byte[]>>? handler = null;
+            if (request.Subject == "__login__" && request.HasPayload)
+            {
+                handler = _loginHandler;
+            }
+            else if (!request.HasPayload)
+            {
+                _getHandlers.TryGetValue(request.Subject ?? "", out handler);
+            }
+            else
+            {
+                _postHandlers.TryGetValue(request.Subject ?? "", out handler);
+            }
+
+            if (handler is null)
+                return new ApiResponse { Success = false, ErrorCode = "NotFound", ErrorMessage = $"Không tìm thấy handler cho subject '{request.Subject}'" };
+
+            var result = await handler(payload);
+            return new ApiResponse
+            {
+                Subject = request.Subject,
+                Payload = ByteString.CopyFrom(result),
+                Success = true
+            };
+        }
+        catch (Exception ex)
+        {
+            return new ApiResponse { Success = false, ErrorCode = "InternalError", ErrorMessage = ex.Message };
+        }
+    }
+
+    private static byte[] Decompress(byte[] data)
+    {
+        using var input = new MemoryStream(data);
+        using var output = new MemoryStream();
+        using var deflate = new DeflateStream(input, CompressionMode.Decompress);
+        deflate.CopyTo(output);
+        return output.ToArray();
+    }
 
     public int WebSocketPort => _listener.Port;
 

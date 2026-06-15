@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package myconnection;
+
+option csharp_namespace = "MyConnection";
+
+message LoginResponse {
+  string token = 1;
+  string user_id = 2;
+  string user_name = 3;
+}

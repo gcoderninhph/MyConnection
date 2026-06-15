@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Google.Protobuf;
 
 namespace MyConnection;
 
@@ -8,7 +9,7 @@ public class SubjectDispatcher
 
     public event Action<string>? OnEmptyDispatch;
 
-    public ISubscribe Subscribe<TData>(string subject, Action<TData> callback)
+    public ISubscribe Subscribe<TData>(string subject, Action<TData> callback) where TData : IMessage<TData>
     {
         Action<byte[]> wrapped = rawPayload =>
         {

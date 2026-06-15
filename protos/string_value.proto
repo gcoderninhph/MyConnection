@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package myconnection;
+
+option csharp_namespace = "MyConnection";
+
+message StringValue {
+  string value = 1;
+}

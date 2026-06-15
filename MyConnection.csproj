@@ -20,6 +20,10 @@
     </PackageReference>
   </ItemGroup>
 
+  <ItemGroup>
+    <Protobuf Include="protos\*.proto" />
+  </ItemGroup>
+
   <ItemGroup Condition="'$(TargetFramework)' == 'net9.0'">
     <PackageReference Include="Google.Protobuf" Version="3.34.1" />
     <PackageReference Include="Microsoft.IdentityModel.Tokens" Version="8.*" />
@@ -37,6 +41,10 @@
   <ItemGroup>
     <Compile Remove="MyConnection.Tests\**" />
     <Compile Remove="ConsoleDemo\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="plan\" />
   </ItemGroup>
 
 </Project>
