@@ -181,36 +181,8 @@ public class WebSocketListener
         _registry.Remove(connection.Id);
     }
 
-    private async Task ReceiveLoop(ConnectionImplement connection, WebSocket webSocket)
-    {
-        var buffer = new byte[1024 * 64];
-        while (webSocket.State == WebSocketState.Open)
-        {
-            WebSocketReceiveResult result;
-            using var ms = new MemoryStream();
-            do
-            {
-                result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
-                ms.Write(buffer, 0, result.Count);
-            }
-            while (!result.EndOfMessage);
-
-            if (result.MessageType == WebSocketMessageType.Close)
-                break;
-
-            connection.WebSocketPingTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-
-            var data = ms.ToArray();
-            try
-            {
-                var envelope = MessageEnvelope.Parser.ParseFrom(data);
-                _registry.Route(connection.Id, envelope.Subject, envelope.Payload.ToByteArray(), fromUdp: false);
-            }
-            catch
-            {
-            }
-        }
-    }
+    private Task ReceiveLoop(ConnectionImplement connection, WebSocket webSocket)
+        => ServerCore.ReceiveLoop(connection, webSocket, _registry, _cts!.Token);
 
     private static async Task<(string method, string path, Dictionary<string, string> headers)> ReadHttpRequest(NetworkStream stream)
     {
@@ -297,11 +269,5 @@ public class WebSocketListener
         _registry.Clear();
     }
 
-    private class JwtUser : IUser
-    {
-        public string Name { get; }
-        public string Id { get; }
-        public JwtUser(string id, string name) { Id = id; Name = name; }
-    }
 }
 #endif

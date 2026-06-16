@@ -31,16 +31,28 @@ Thư viện kết nối mạng client-server cho .NET, hỗ trợ WebSocket + UD
 ┌──────────────────────────┴──────────────────────────────────────┐
 │                          SERVER                                  │
 │                                                                  │
-│  IServer ──→ ServerAbstract ──→ ServerImplement                 │
-│   │                              │                               │
-│   │  Create(config)              │  WebSocketListener (TCP)      │
-│   │  Connections                 │  UdpListener                  │
-│   │  CreateToken / GetById       │  ConnectionRegistry           │
-│   │  OnConnect / OnDisconnect    │  ServerTokenService (JWT)     │
-│   │  SendOnXxx / SendAllOnXxx    │  UdpSessionMap                │
-│   │  SubscribeXxx                │  UdpHandshakeHandler           │
-│   │  OnLogin / OnGet / OnPost    │  REST dispatch                │
-│   │  OnWarning                   │  Warning (W001-W007)          │
+│  IServer ──→ ServerAbstract → ServerCore (shared logic)         │
+│   │              │               ├── ServerImplement (raw TCP)   │
+│   │              │               └── ServerKestrel  (Kestrel)    │
+│   │              │                                               │
+│   │              │         ┌─────────────────────────┐           │
+│   │              │         │ Shared:                  │           │
+│   │              │         │ • ConnectionRegistry     │           │
+│   │              │         │ • ServerTokenService     │           │
+│   │              │         │ • UdpListener            │           │
+│   │              │         │ • UdpSessionMap          │           │
+│   │              │         │ • UdpHandshakeHandler    │           │
+│   │              │         │ • REST dispatch          │           │
+│   │              │         └─────────────────────────┘           │
+│   │                                                              │
+│   │  Create(config)        Tự chọn impl: ServerKestrelConfig     │
+│   │  Connections           → ServerKestrel, ServerConfig         │
+│   │  CreateToken / GetById → ServerImplement                     │
+│   │  OnConnect/OnDisconnect                                      │
+│   │  SendOnXxx / SendAllOnXxx                                    │
+│   │  SubscribeXxx                                                │
+│   │  OnLogin / OnGet / OnPost                                    │
+│   │  OnWarning                                                   │
 │                                                                  │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -63,6 +75,8 @@ Thư viện kết nối mạng client-server cho .NET, hỗ trợ WebSocket + UD
 | **Reconnect-safe** | `DisconnectAsync` giữ token, `Logout` mới xóa token |
 | **Dispose pattern** | `IAsyncDisposable`, `await using` tự dọn dẹp |
 | **IL2CPP/Unity** | `netstandard2.1` target, `MessageParser<T>` AOT-safe, DLL bundle thẳng |
+| **Dual server** | 2 transport: raw `TcpListener` (`ServerImplement`) và ASP.NET Core Kestrel (`ServerKestrel`) |
+| **DI integration** | `AddMyConnectionServer()` + `UseMyConnectionServer()`, shared `WebApplication` pipeline |
 
 ---
 
@@ -73,7 +87,8 @@ Thư viện kết nối mạng client-server cho .NET, hỗ trợ WebSocket + UD
 | `net9.0` | `Google.Protobuf 3.34.1`, `Microsoft.IdentityModel.Tokens 8.*`, `System.IdentityModel.Tokens.Jwt 8.*`, `Colyseus.NativeWebSocket 2.*` |
 | `netstandard2.1` (Unity) | `Google.Protobuf.dll` + `NativeWebSocket.dll` (bundle từ `libs/`) |
 
-`Grpc.Tools 2.80.0` dùng để compile `.proto` tại build-time (PrivateAssets=all).
+`Grpc.Tools 2.80.0` dùng để compile `.proto` tại build-time (PrivateAssets=all).  
+`FrameworkReference Microsoft.AspNetCore.App` cho server Kestrel (net9.0 only).
 
 ---
 
@@ -81,51 +96,58 @@ Thư viện kết nối mạng client-server cho .NET, hỗ trợ WebSocket + UD
 
 ```
 MyConnection/
-├── src/                         # Mã nguồn thư viện
-│   ├── IClient.cs               # Interface client
-│   ├── ClientAbstract.cs        # Abstract class client (logic ConnectServer chung)
-│   ├── IServer.cs               # Interface server
-│   ├── ServerAbstract.cs        # Abstract class server
-│   ├── IConnection.cs           # Interface kết nối (id, user, attributes)
-│   ├── IUser.cs                 # Interface người dùng (id, name)
-│   ├── ISubscribe.cs            # Handle hủy đăng ký subscribe
+├── src/                              # Mã nguồn thư viện
+│   ├── IClient.cs                    # Interface client
+│   ├── ClientAbstract.cs             # Abstract class client
+│   ├── IServer.cs                    # Interface server + static factory
+│   ├── ServerAbstract.cs             # Abstract class server
+│   ├── ServerCore.cs                 # Shared logic (net9.0)
+│   ├── IConnection.cs                # Interface kết nối
+│   ├── IUser.cs                      # Interface người dùng
+│   ├── ISubscribe.cs                 # Handle hủy đăng ký subscribe
 │   ├── ConnectionFailedException.cs
-│   └── impl/                    # Triển khai
-│       ├── ClientConfig.cs      # Cấu hình client
-│       ├── ClientImplement.cs   # Client implementation đầy đủ
-│       ├── ServerConfig.cs      # Cấu hình server
-│       ├── ServerImplement.cs   # Server implementation đầy đủ
-│       ├── ConnectionImplement.cs
-│       ├── ConnectionRegistry.cs
-│       ├── SubjectDispatcher.cs # Dispatcher pub/sub
-│       ├── ProtoSerializer.cs   # Serialize/Deserialize Protobuf
-│       ├── WebSocketListener.cs # HTTP+WebSocket server tự build
-│       ├── UdpListener.cs       # UDP server
-│       ├── UdpClientWrapper.cs  # UDP client
-│       ├── UdpSessionMap.cs     # Ánh xạ connection → UDP endpoint
-│       ├── UdpHandshakeHandler.cs
-│       ├── UdpPingService.cs    # Ping/pong RTT
-│       ├── ServerTokenService.cs # Sinh + verify JWT
-│       ├── ApiException.cs      # Exception cho REST API
-│       └── WarningInfo.cs       # Thông tin cảnh báo
-├── protos/                      # Protocol Buffer schema
+│   └── impl/                         # Triển khai
+│       ├── ClientConfig.cs           # Cấu hình client
+│       ├── ClientImplement.cs        # Client implementation
+│       ├── ServerConfig.cs           # Cấu hình server (raw TCP)
+│       ├── ServerKestrelConfig.cs     # Cấu hình server Kestrel
+│       ├── ServerImplement.cs        # Server raw TcpListener
+│       ├── ServerKestrel.cs          # Server ASP.NET Core Kestrel
+│       ├── ConnectionImplement.cs    # Connection wrapper
+│       ├── ConnectionRegistry.cs     # Tracking + routing
+│       ├── SubjectDispatcher.cs      # Pub/sub dispatcher (2x)
+│       ├── ProtoSerializer.cs        # Protobuf serialize/deserialize
+│       ├── WebSocketListener.cs      # HTTP+WebSocket raw TCP
+│       ├── UdpListener.cs            # UDP server
+│       ├── UdpClientWrapper.cs       # UDP client
+│       ├── UdpSessionMap.cs          # Connection → UDP endpoint
+│       ├── UdpHandshakeHandler.cs    # Sinh key UDP
+│       ├── UdpPingService.cs         # Ping/pong RTT
+│       ├── KestrelHostedService.cs   # DI extension AddMyConnectionServer
+│       ├── MyConnectionWebApplicationExtensions.cs  # UseMyConnectionServer
+│       ├── ServerTokenService.cs     # JWT create + validate
+│       ├── ApiException.cs           # REST API exception
+│       └── WarningInfo.cs            # Thông tin cảnh báo
+├── protos/                           # Protocol Buffer schema
 │   ├── api_request.proto
 │   ├── api_response.proto
 │   ├── login_response.proto
 │   ├── message_envelope.proto
 │   └── string_value.proto
-├── MyConnection.Tests/          # xUnit tests (net9.0)
-│   └── ConnectionTests.cs       # 13 tests: A1-A3, B1-B3, C1-C3, D1-D4
-├── ConsoleDemo/                 # Demo server console app
+├── MyConnection.Tests/               # xUnit tests (net9.0)
+│   └── ConnectionTests.cs            # 13 tests
+├── ConsoleDemo/                      # Demo server console app
 │   ├── ConsoleDemo.csproj
-│   └── Program.cs
-├── plan/                        # Tài liệu thiết kế
+│   └── Program.cs                    # ASP.NET Core + Kestrel demo
+├── plan/                             # Tài liệu thiết kế
+│   ├── kestrel-server.md             # Plan ServerKestrel (đã hoàn thành)
+│   ├── kestrel-integration.md        # Refactor tích hợp WebApplication
 │   ├── api-call-system.md
 │   └── logout.md
-├── libs/                        # DLL bundle cho netstandard2.1
+├── libs/                             # DLL bundle cho netstandard2.1
 │   ├── Google.Protobuf.dll
 │   └── NativeWebSocket.dll
-├── nupkgs/                      # NuGet package output
+├── nupkgs/                           # NuGet package output
 │   └── MyConnection.1.0.0.nupkg
 └── MyConnection.csproj
 ```
@@ -238,7 +260,7 @@ public interface IConnection
 | `udpPingIntervalMs` | `5000` | Chu kỳ ping UDP (millisecond) |
 | `udpPingTimeoutMs` | `15000` | Timeout ping UDP (millisecond) |
 
-### ServerConfig
+### ServerConfig (raw TCP — `ServerImplement`)
 
 | Field | Mặc định | Mô tả |
 |---|---|---|
@@ -250,6 +272,13 @@ public interface IConnection
 | `jwtSecret` | `""` | Khóa bí mật JWT (bắt buộc) |
 | `jwtAudience` | `""` | Audience claim trong JWT |
 | `jwtIssuer` | `""` | Issuer claim trong JWT |
+
+### ServerKestrelConfig (Kestrel — `ServerKestrel`, kế thừa `ServerConfig`)
+
+| Field | Mặc định | Mô tả |
+|---|---|---|
+| `KestrelUrls` | `"http://0.0.0.0:9090"` | URL cho Kestrel lắng nghe. Ghi đè port so với `tcpPort` |
+| *Kế thừa từ ServerConfig* | | `websocketEndpoint`, `restEndpoint`, `restCompressedEnable`, `udpPort`, `jwtSecret`, `jwtAudience`, `jwtIssuer` |
 
 ---
 
@@ -384,7 +413,7 @@ message ApiResponse {
 
 ## Ví dụ sử dụng
 
-### Server (.NET 9.0)
+### Server — Raw TCP (`ServerImplement`)
 
 ```csharp
 using MyConnection;
@@ -400,9 +429,8 @@ var config = new ServerConfig
     jwtAudience = "my-audience"
 };
 
-var server = (ServerImplement)ServerImplement.Create(config);
+await using var server = (ServerImplement)IServer.Create(config);
 
-// Đăng ký xác thực login
 server.OnLogin<StringValue>(async data =>
 {
     if (data.Value == "admin")
@@ -410,35 +438,94 @@ server.OnLogin<StringValue>(async data =>
     throw new Exception("Sai thông tin đăng nhập");
 });
 
-// Đăng ký REST handlers
-server.OnGetRequest<StringValue>("ping", () => Task.FromResult(new StringValue { Value = "pong" }));
-server.OnPostRequest<StringValue, StringValue>("echo", req => Task.FromResult(req));
-
-// Đăng ký sự kiện kết nối
 server.OnConnect(conn =>
-{
-    Console.WriteLine($"[+] {conn.User.Name} đã kết nối (Id={conn.Id})");
-});
+    Console.WriteLine($"[+] {conn.User.Name} đã kết nối (Id={conn.Id})"));
 
-server.OnDisconnect(conn =>
-{
-    Console.WriteLine($"[-] {conn.User.Name} đã ngắt kết nối");
-});
-
-// Đăng ký nhận message từ client qua TCP
 server.SubscribeTcp<StringValue>("chat", (conn, msg) =>
 {
     Console.WriteLine($"{conn.User.Name}: {msg.Value}");
-    // Broadcast tới tất cả client
     server.SendAllOnTcp("chat", msg);
 });
 
-// Tạo token cho client
-var token = server.CreateToken("1", "Admin");
-Console.WriteLine($"Token: {token}");
-
+Console.WriteLine($"Token: {server.CreateToken("1", "Admin")}");
 await Task.Delay(-1); // Giữ server chạy
 ```
+
+### Server — Kestrel standalone (`ServerKestrel`)
+
+```csharp
+using MyConnection;
+
+var config = new ServerKestrelConfig
+{
+    KestrelUrls = "http://0.0.0.0:9090",
+    websocketEndpoint = "/ws",
+    restEndpoint = "/api",
+    udpPort = 9091,
+    jwtSecret = "your-secret-key-at-least-32-bytes!!",
+    jwtIssuer = "my-issuer",
+    jwtAudience = "my-audience"
+};
+
+await using var server = (ServerKestrel)IServer.Create(config);
+
+// Đăng ký handlers giống hệt ServerImplement
+server.OnLogin<StringValue>(...);
+server.SubscribeTcp<StringValue>("chat", ...);
+
+await Task.Delay(-1); // Server tự quản lý Kestrel lifecycle
+```
+
+### Server — ASP.NET Core DI (`ServerKestrel` + shared pipeline)
+
+```csharp
+using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.DependencyInjection;
+using MyConnection;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddMyConnectionServer(new ServerKestrelConfig
+{
+    KestrelUrls = "http://0.0.0.0:9090",
+    websocketEndpoint = "/ws",
+    restEndpoint = "/api",
+    udpPort = 9091,
+    jwtSecret = "your-secret-key-at-least-32-bytes!!",
+    jwtIssuer = "my-issuer",
+    jwtAudience = "my-audience"
+});
+
+var app = builder.Build();
+
+var server = app.Services.GetRequiredService<IServer>();
+
+// Đăng ký handlers
+server.OnLogin<StringValue>(...);
+server.OnConnect(conn => Console.WriteLine($"[+] {conn.User.Name} connected"));
+server.SubscribeTcp<StringValue>("chat", (conn, msg) =>
+{
+    server.SendAllOnTcp("chat", msg);
+});
+
+// Đăng ký MyConnection middleware vào shared WebApplication pipeline
+app.UseMyConnectionServer();
+
+await app.RunAsync(); // 1 Kestrel duy nhất
+```
+
+> **Lưu ý**: `UseMyConnectionServer()` tự động áp `KestrelUrls` từ config vào host Kestrel và xóa default `localhost:5000` — chỉ 1 cổng duy nhất. Server lifecycle do `KestrelHostedService` (IHostedService) quản lý.
+
+### So sánh 3 cách dùng server
+
+| | ServerImplement | ServerKestrel (standalone) | ServerKestrel (DI) |
+|---|---|---|---|
+| Transport | Raw TcpListener | Kestrel nội bộ | Kestrel shared host |
+| Kestrel instances | 0 | 1 | 1 (shared) |
+| DI container | Không | Không | Có (`AddMyConnectionServer`) |
+| Middleware | Không | Không | Có (`UseMyConnectionServer`) |
+| Startup | `IServer.Create(ServerConfig)` | `IServer.Create(ServerKestrelConfig)` | `WebApplication.CreateBuilder` |
+| Lifecycle | `await using` | `await using` | `IHostedService` |
 
 ### Client
 
@@ -455,44 +542,30 @@ var config = new ClientConfig
 
 var client = IClient.Create(config);
 
-// Đăng ký sự kiện
 client.OnDisconnect(() => Console.WriteLine("[!] Mất kết nối"));
 client.OnWarning(w => Console.WriteLine($"[W] {w.Code}: {w.Message}"));
 
-// Đăng ký nhận message
 client.SubscribeTcp<StringValue>("chat", msg =>
-{
-    Console.WriteLine($"Chat: {msg.Value}");
-});
+    Console.WriteLine($"Chat: {msg.Value}"));
 
-// Đăng nhập
 var user = await client.Login(() => new StringValue { Value = "admin" });
 Console.WriteLine($"Logged in as {user.Name} (Id={user.Id})");
 
-// Kết nối WebSocket
 await client.ConnectServer();
 
-// Gửi message
 client.SendOnTcp("chat", new StringValue { Value = "Xin chào!" });
 
-// REST API
 var pong = await client.GetRequest<StringValue>("ping");
 Console.WriteLine(pong.Value); // "pong"
 
-var echo = await client.PostRequest<StringValue, StringValue>("echo", new StringValue { Value = "hello" });
+var echo = await client.PostRequest<StringValue, StringValue>("echo",
+    new StringValue { Value = "hello" });
 Console.WriteLine(echo.Value); // "hello"
 
-// Ngắt kết nối (giữ token)
-await client.DisconnectAsync();
-
-// Kết nối lại
-await client.ConnectServer();
-
-// Đăng xuất (xóa token)
-await client.Logout();
-
-// Dọn dẹp
-await client.DisposeAsync();
+await client.DisconnectAsync();  // Giữ token
+await client.ConnectServer();    // Reconnect
+await client.Logout();           // Xóa token
+await client.DisposeAsync();     // Dọn dẹp
 ```
 
 ---
@@ -512,7 +585,7 @@ dotnet test
 | | A3 | Token hết hạn → throw exception |
 | **B** Message | B1 | Client gửi → server nhận |
 | | B2 | Server gửi → client nhận |
-| | B3 | 2 client chat qua server (subscribe connection) |
+| | B3 | 2 client chat qua server |
 | **C** Disconnect | C1 | Server ngắt → client `OnDisconnect` |
 | | C2 | Client ngắt → server `OnDisconnect` |
 | | C3 | Reconnect, subscription vẫn hoạt động |
@@ -521,23 +594,25 @@ dotnet test
 | | D3 | Server W006 khi route đến subject không subscriber |
 | | D4 | `LatestRttMs` null khi UDP tắt |
 
-Test dùng `TestClient` extend `ClientAbstract` với `ClientWebSocket` của .NET, chạy cùng `ServerImplement` thật.
-
 ---
 
 ## Build & Pack
 
 ```bash
-# Build cả 2 target
-dotnet build
+# Build cả 2 target (net9.0 + netstandard2.1)
+dotnet build                              # 0 error, 0 warning
 
 # Chạy test
-dotnet test
+dotnet test                               # 13/13 passed
 
 # Build NuGet package
-dotnet pack -c Release -o nupkgs
+dotnet pack -c Release -o nupkgs          # → nupkgs/MyConnection.1.0.0.nupkg
 
-# Publish ConsoleDemo (self-contained win-x64)
+# Build + chạy ConsoleDemo
+dotnet build ConsoleDemo/ConsoleDemo.csproj
+dotnet run --project ConsoleDemo
+
+# Publish ConsoleDemo self-contained (không cần cài .NET)
 dotnet publish ConsoleDemo -c Release --self-contained true -r win-x64 -o ConsoleDemo\publish
 ```
 

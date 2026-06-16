@@ -1,4 +1,6 @@
-﻿using MyConnection;
+﻿using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.DependencyInjection;
+using MyConnection;
 
 static void Header(string title)
 {
@@ -26,14 +28,16 @@ static void Ok(string msg)
 }
 
 // =================================================================
-Header("MyConnection Server Demo");
-Info("Server lang nghe REST + WebSocket + UDP.");
+Header("MyConnection Server Demo (ASP.NET Core + Kestrel)");
+Info("Server dung Kestrel transport, shared WebApplication pipeline.");
 Info("Mo phong day du: Login REST, GetRequest, PostRequest, echo WS/UDP.");
 Info("");
 
-var config = new ServerConfig
+var builder = WebApplication.CreateBuilder(args);
+
+var config = new ServerKestrelConfig
 {
-    tcpPort = 9090,
+    KestrelUrls = "http://0.0.0.0:9090",
     websocketEndpoint = "/ws",
     restEndpoint = "/api",
     restCompressedEnable = true,
@@ -43,7 +47,11 @@ var config = new ServerConfig
     jwtAudience = "demo-audience"
 };
 
-var server = (ServerImplement)ServerImplement.Create(config);
+builder.Services.AddMyConnectionServer(config);
+
+var app = builder.Build();
+
+var server = app.Services.GetRequiredService<IServer>();
 
 server.OnConnect(conn =>
 {
@@ -80,9 +88,9 @@ server.OnWarning(w =>
 Header("ENDPOINTS");
 
 Console.ForegroundColor = ConsoleColor.White;
-Console.WriteLine($"  TCP        : 127.0.0.1:{config.tcpPort}     (REST + WS chung port)");
-Console.WriteLine($"  REST       : http://127.0.0.1:{config.tcpPort}{config.restEndpoint}");
-Console.WriteLine($"  WebSocket  : ws://127.0.0.1:{config.tcpPort}{config.websocketEndpoint}");
+Console.WriteLine($"  HTTP       : {config.KestrelUrls}");
+Console.WriteLine($"  REST       : {config.KestrelUrls}{config.restEndpoint}");
+Console.WriteLine($"  WebSocket  : ws://{(new Uri(config.KestrelUrls)).Authority}{config.websocketEndpoint}");
 Console.WriteLine($"  UDP        : 127.0.0.1:{config.udpPort}");
 Console.WriteLine($"  Compress   : {(config.restCompressedEnable ? "bat (zip)" : "tat")}");
 Console.ResetColor();
@@ -187,66 +195,27 @@ Info("   client.SendOnUdp(\"echo\", new StringValue { Value = \"Hello UDP!\" });
 Info("");
 
 // =================================================================
-Header("TEST REST API BANG curl");
-
-Info("Luu y: payload la protobuf binary, can serialize truoc bang protoc.");
-Info("Duoi day la vi du conceptual:");
-Info("");
-Info("  # 1. Login de lay token");
-Info("  curl -X POST http://127.0.0.1:9090/api \\");
-Info("    -H \"Content-Type: application/octet-stream\" \\");
-Info("    --data-binary @login_request.bin");
-Info("");
-Info("  # ApiRequest (proto): subject=__login__, has_payload=true,");
-Info("  #   payload=StringValue{value=\"alice\"}");
-Info("");
-Info("  # 2. Get server_time (kem token tu Login)");
-Info("  curl -X POST http://127.0.0.1:9090/api \\");
-Info("    -H \"Content-Type: application/octet-stream\" \\");
-Info("    --data-binary @get_time_request.bin");
-Info("");
-Info("  # ApiRequest (proto): subject=server_time, has_payload=false,");
-Info("  #   token=<token tu login>");
-Info("");
-Info("  # 3. Post echo_rest (kem token + payload)");
-Info("  curl -X POST http://127.0.0.1:9090/api \\");
-Info("    -H \"Content-Type: application/octet-stream\" \\");
-Info("    --data-binary @echo_request.bin");
-Info("");
-Info("  # ApiRequest (proto): subject=echo_rest, has_payload=true,");
-Info("  #   payload=StringValue{value=\"hello\"}, token=<token>");
-Info("");
-
-// =================================================================
 Header("LUONG HOAT DONG");
 
-Info("REST:  Client POST ApiRequest -> Server HandleRestRequest -> dispatch -> tra ApiResponse");
-Info("TCP:   Client WS send -> Server ReceiveLoop -> Route -> echo handler -> SendOnTcp -> WS send -> Client OnMessage");
+Info("REST:  Client POST ApiRequest -> Kestrel HTTP -> dispatch -> tra ApiResponse");
+Info("WS:    Client WS connect -> Kestrel WebSocket -> ReceiveLoop -> Route -> echo handler -> SendOnTcp -> WS send -> Client OnMessage");
 Info("UDP:   Client UdpClient send -> Server UdpListener.ReceiveLoop -> Route -> echo handler -> SendOnUdp -> UdpListener.SendTo");
 Info("Ping:  Client UdpPingService gui __ping__ -> Server ReceiveLoop reply __pong__ -> Client HandleUdpMessage -> OnPongReceived");
-Info("Login: Client Login(data) -> REST POST /api (subject=__login__) -> Server OnLogin handler -> LoginResponse(token) -> client luu token");
-Info("Get:   Client GetRequest(subj) -> REST POST /api (subject=subj,has_payload=false,token) -> Server OnGetRequest handler -> response");
-Info("Post:  Client PostRequest(subj,body) -> REST POST /api (subject=subj,has_payload=true,token) -> Server OnPostRequest handler -> response");
+Info("Login: Client Login(data) -> REST POST {config.restEndpoint} (subject=__login__) -> Server OnLogin handler -> LoginResponse(token) -> client luu token");
+Info("Get:   Client GetRequest(subj) -> REST POST {config.restEndpoint} (subject=subj,has_payload=false,token) -> Server OnGetRequest handler -> response");
+Info("Post:  Client PostRequest(subj,body) -> REST POST {config.restEndpoint} (subject=subj,has_payload=true,token) -> Server OnPostRequest handler -> response");
 
 // =================================================================
 Header("CHO KET NOI (Ctrl+C de thoat)");
 Console.WriteLine();
 
-var tcs = new TaskCompletionSource();
-Console.CancelKeyPress += (_, e) =>
-{
-    e.Cancel = true;
-    tcs.TrySetResult();
-};
+app.UseMyConnectionServer();
 
-await tcs.Task;
+await app.RunAsync();
 
 Console.WriteLine();
 Header("SHUTDOWN");
-Info("Dang dong server...");
-await server.DisposeAsync();
 Ok("Server da dung.");
 Console.WriteLine();
 
 internal record DemoUser(string Id, string Name) : IUser;
-

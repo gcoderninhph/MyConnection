@@ -4,15 +4,20 @@ namespace MyConnection
 {
     /// <summary>
     /// Giao diện phía server. Quản lý kết nối, nhận/gửi message qua TCP/UDP, xác thực JWT, và REST endpoint.
+    /// Hai transport: <see cref="ServerConfig"/> (raw TcpListener) và <see cref="ServerKestrelConfig"/> (Kestrel).
     /// </summary>
     public interface IServer : IAsyncDisposable
     {
         /// <summary>
         /// Tạo server từ cấu hình. Chỉ hỗ trợ .NET 9.0.
+        /// Truyền <see cref="ServerKestrelConfig"/> để dùng Kestrel transport,
+        /// <see cref="ServerConfig"/> để dùng raw TcpListener.
         /// </summary>
         public static IServer Create(ServerConfig config)
         {
 #if NET9_0
+            if (config is ServerKestrelConfig kc)
+                return ServerKestrel.Create(kc);
             return ServerImplement.Create(config);
 #else
             throw new PlatformNotSupportedException("Server requires .NET 9.0 target.");
