@@ -122,13 +122,13 @@ namespace MyConnection
         /// </summary>
         /// <param name="subject">Chủ đề ánh xạ tới request.</param>
         /// <param name="requestLogic">Hàm xử lý, trả về dữ liệu Protobuf phản hồi.</param>
-        void OnGetRequest<TResponse>(string subject, Func<Task<TResponse>> requestLogic) where TResponse : IMessage<TResponse>;
+        void OnGetRequest<TResponse>(string subject, Func<IUser, Task<TResponse>> requestLogic) where TResponse : IMessage<TResponse>;
 
         /// <summary>
         /// Đăng ký logic xử lý cho POST REST request (có payload).
         /// </summary>
         /// <param name="subject">Chủ đề ánh xạ tới request.</param>
         /// <param name="requestLogic">Hàm xử lý nhận payload và trả về dữ liệu Protobuf phản hồi.</param>
-        void OnPostRequest<TRequest, TResponse>(string subject, Func<TRequest, Task<TResponse>> requestLogic) where TRequest : IMessage<TRequest> where TResponse : IMessage<TResponse>;
+        void OnPostRequest<TRequest, TResponse>(string subject, Func<IUser, TRequest, Task<TResponse>> requestLogic) where TRequest : IMessage<TRequest> where TResponse : IMessage<TResponse>;
     }
 }

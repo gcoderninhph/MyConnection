@@ -77,8 +77,8 @@ public class ServerKestrel : ServerCore
             return;
         }
 
-        var userId = principal.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? "";
-        var userName = principal.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value ?? "";
+        var userId = principal.FindFirst(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub)?.Value ?? "";
+        var userName = principal.FindFirst(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Name)?.Value ?? "";
         var user = new JwtUser(userId, userName);
 
         var ws = await ctx.WebSockets.AcceptWebSocketAsync();

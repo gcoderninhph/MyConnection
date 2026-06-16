@@ -17,8 +17,8 @@ namespace MyConnection
         public abstract ISubscribe SubscribeTcp<TData>(string subject, Action<IConnection, TData> data) where TData : IMessage<TData>;
         public abstract ISubscribe OnWarning(Action<ServerWarningInfo> onWarning);
         public abstract void OnLogin<TData>(Func<TData, Task<IUser>> authLogic) where TData : IMessage<TData>;
-        public abstract void OnGetRequest<TResponse>(string subject, Func<Task<TResponse>> requestLogic) where TResponse : IMessage<TResponse>;
-        public abstract void OnPostRequest<TRequest, TResponse>(string subject, Func<TRequest, Task<TResponse>> requestLogic) where TRequest : IMessage<TRequest> where TResponse : IMessage<TResponse>;
+        public abstract void OnGetRequest<TResponse>(string subject, Func<IUser, Task<TResponse>> requestLogic) where TResponse : IMessage<TResponse>;
+        public abstract void OnPostRequest<TRequest, TResponse>(string subject, Func<IUser, TRequest, Task<TResponse>> requestLogic) where TRequest : IMessage<TRequest> where TResponse : IMessage<TResponse>;
         public abstract ValueTask DisposeAsync();
     }
 }

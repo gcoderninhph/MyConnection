@@ -59,7 +59,7 @@ server.OnConnect(conn =>
     Console.ForegroundColor = ConsoleColor.Green;
     Console.Write("+ CONNECT ");
     Console.ResetColor();
-    Console.WriteLine($"{conn.User.Name} (Id={conn.Id})");
+    Console.WriteLine($"user={conn.User.Name} id=[{conn.User.Id}] (Id={conn.Id})");
 });
 
 server.OnDisconnect(conn =>
@@ -68,7 +68,7 @@ server.OnDisconnect(conn =>
     Console.ForegroundColor = ConsoleColor.Magenta;
     Console.Write("- DISCONNECT ");
     Console.ResetColor();
-    Console.WriteLine($"{conn.User.Name} (Id={conn.Id})");
+    Console.WriteLine($"user={conn.User.Name} id=[{conn.User.Id}] (Id={conn.Id})");
 });
 
 server.OnWarning(w =>
@@ -105,25 +105,25 @@ server.OnLogin<StringValue>((loginData) =>
     var username = loginData.Value;
     if (string.IsNullOrWhiteSpace(username))
         throw new InvalidOperationException("Username khong duoc rong");
-
-    Ok($"[Login] Nguoi dung \"{username}\" xac thuc thanh cong");
-    return Task.FromResult<IUser>(new DemoUser(username, username));
+    string id = Guid.NewGuid().ToString();
+    Ok($"[Login] Nguoi dung id=[{id}] user=\"{username}\" xac thuc thanh cong");
+    return Task.FromResult<IUser>(new DemoUser(id, username));
 });
 Ok("OnLogin<StringValue> da dang ky (subject: __login__)");
 
 // --- OnGetRequest ---
-server.OnGetRequest<StringValue>("server_time", () =>
+server.OnGetRequest<StringValue>("server_time", (user) =>
 {
     var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
-    Info($"[GetRequest] server_time -> \"{now}\"");
+    Info($"[GetRequest] id=[{user.Id}] user=\"{user.Name}\" server_time -> \"{now}\"");
     return Task.FromResult(new StringValue { Value = now });
 });
 Ok("OnGetRequest<StringValue>(\"server_time\") da dang ky");
 
 // --- OnPostRequest ---
-server.OnPostRequest<StringValue, StringValue>("echo_rest", (req) =>
+server.OnPostRequest<StringValue, StringValue>("echo_rest", (user, req) =>
 {
-    Info($"[PostRequest] echo_rest <- \"{req.Value}\"");
+    Info($"[PostRequest] id=[{user.Id}] user=\"{user.Name}\" echo_rest <- \"{req.Value}\"");
     var result = new StringValue { Value = $"[REST echo] {req.Value}" };
     Ok($"[PostRequest] echo_rest -> \"{result.Value}\"");
     return Task.FromResult(result);

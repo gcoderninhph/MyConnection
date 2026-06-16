@@ -1,5 +1,6 @@
 #if NET9_0
 using Google.Protobuf;
+using System.IdentityModel.Tokens.Jwt;
 using System.IO.Compression;
 using System.Net.WebSockets;
 
@@ -16,8 +17,8 @@ public abstract class ServerCore : ServerAbstract
     protected UdpListener? _udpListener;
 
     protected Func<byte[], Task<byte[]>>? _loginHandler;
-    protected readonly Dictionary<string, Func<byte[], Task<byte[]>>> _getHandlers = new();
-    protected readonly Dictionary<string, Func<byte[], Task<byte[]>>> _postHandlers = new();
+    protected readonly Dictionary<string, Func<IUser, byte[], Task<byte[]>>> _getHandlers = new();
+    protected readonly Dictionary<string, Func<IUser, byte[], Task<byte[]>>> _postHandlers = new();
 
     protected ServerCore(ServerConfig config)
     {
@@ -129,21 +130,21 @@ public abstract class ServerCore : ServerAbstract
         };
     }
 
-    public override void OnGetRequest<TResponse>(string subject, Func<Task<TResponse>> requestLogic)
+    public override void OnGetRequest<TResponse>(string subject, Func<IUser, Task<TResponse>> requestLogic)
     {
-        _getHandlers[subject] = async (_) =>
+        _getHandlers[subject] = async (currentUser, _) =>
         {
-            var result = await requestLogic();
+            var result = await requestLogic(currentUser);
             return ProtoSerializer.Serialize(result);
         };
     }
 
-    public override void OnPostRequest<TRequest, TResponse>(string subject, Func<TRequest, Task<TResponse>> requestLogic)
+    public override void OnPostRequest<TRequest, TResponse>(string subject, Func<IUser, TRequest, Task<TResponse>> requestLogic)
     {
-        _postHandlers[subject] = async (payload) =>
+        _postHandlers[subject] = async (currentUser, payload) =>
         {
             var request = ProtoSerializer.Deserialize<TRequest>(payload);
-            var result = await requestLogic(request);
+            var result = await requestLogic(currentUser, request);
             return ProtoSerializer.Serialize(result);
         };
     }
@@ -152,29 +153,44 @@ public abstract class ServerCore : ServerAbstract
     {
         try
         {
+            IUser? currentUser = null;
             if (request.Subject != "__login__")
             {
                 var principal = _tokenService.ValidateToken(request.Token);
                 if (principal is null)
                     return new ApiResponse { Success = false, ErrorCode = "TokenExpired", ErrorMessage = "Token không hợp lệ hoặc đã hết hạn" };
+
+                var userId = principal.FindFirst(JwtRegisteredClaimNames.Sub)?.Value ?? "";
+                var userName = principal.FindFirst(JwtRegisteredClaimNames.Name)?.Value ?? "";
+                currentUser = new JwtUser(userId, userName);
             }
 
             byte[] payload = request.Payload.ToByteArray();
             if (request.Compressed)
                 payload = Decompress(payload);
 
-            Func<byte[], Task<byte[]>>? handler = null;
+            byte[] result;
             if (request.Subject == "__login__" && request.HasPayload)
-                handler = _loginHandler;
-            else if (!request.HasPayload)
-                _getHandlers.TryGetValue(request.Subject ?? "", out handler);
+            {
+                if (_loginHandler is null)
+                    return new ApiResponse { Success = false, ErrorCode = "NotFound", ErrorMessage = $"Không tìm thấy handler cho subject '{request.Subject}'" };
+
+                result = await _loginHandler(payload);
+            }
             else
-                _postHandlers.TryGetValue(request.Subject ?? "", out handler);
+            {
+                Func<IUser, byte[], Task<byte[]>>? handler = null;
+                if (!request.HasPayload)
+                    _getHandlers.TryGetValue(request.Subject ?? "", out handler);
+                else
+                    _postHandlers.TryGetValue(request.Subject ?? "", out handler);
 
-            if (handler is null)
-                return new ApiResponse { Success = false, ErrorCode = "NotFound", ErrorMessage = $"Không tìm thấy handler cho subject '{request.Subject}'" };
+                if (handler is null)
+                    return new ApiResponse { Success = false, ErrorCode = "NotFound", ErrorMessage = $"Không tìm thấy handler cho subject '{request.Subject}'" };
 
-            var result = await handler(payload);
+                result = await handler(currentUser!, payload);
+            }
+
             return new ApiResponse
             {
                 Subject = request.Subject,

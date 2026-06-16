@@ -13,7 +13,7 @@ public class ServerTokenService
 
     public ServerTokenService(ServerConfig config)
     {
-        _handler = new JwtSecurityTokenHandler();
+        _handler = new JwtSecurityTokenHandler { MapInboundClaims = false };
         var key = new SymmetricSecurityKey(
             System.Text.Encoding.UTF8.GetBytes(config.jwtSecret));
         _credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);

@@ -148,7 +148,7 @@ MyConnection/
 │   ├── Google.Protobuf.dll
 │   └── NativeWebSocket.dll
 ├── nupkgs/                           # NuGet package output
-│   └── MyConnection.1.0.0.nupkg
+│   └── MyConnection.1.0.2.nupkg
 └── MyConnection.csproj
 ```
 
@@ -222,8 +222,8 @@ public interface IServer : IAsyncDisposable
 
     // REST handlers
     void OnLogin<TData>(Func<TData, Task<IUser>> authLogic);
-    void OnGetRequest<TResponse>(string subject, Func<Task<TResponse>> handler);
-    void OnPostRequest<TRequest, TResponse>(string subject, Func<TRequest, Task<TResponse>> handler);
+    void OnGetRequest<TResponse>(string subject, Func<IUser, Task<TResponse>> handler);
+    void OnPostRequest<TRequest, TResponse>(string subject, Func<IUser, TRequest, Task<TResponse>> handler);
 }
 ```
 
@@ -357,9 +357,9 @@ message ApiResponse {
 
 **Luồng xử lý REST trên server**:
 1. Nhận HTTP POST → parse `ApiRequest`
-2. Nếu `subject != "__login__"` → validate JWT token
+2. Nếu `subject != "__login__"` → validate JWT token → extract `IUser` từ claims (`sub` → Id, `name` → Name)
 3. Nếu `Compressed` → giải nén payload
-4. Route theo subject → `_getHandlers` hoặc `_postHandlers`
+4. Route theo subject → `_getHandlers` hoặc `_postHandlers` (truyền `IUser` vào handler)
 5. Serialize kết quả → `ApiResponse`
 6. Trả về HTTP response
 
@@ -606,7 +606,7 @@ dotnet build                              # 0 error, 0 warning
 dotnet test                               # 13/13 passed
 
 # Build NuGet package
-dotnet pack -c Release -o nupkgs          # → nupkgs/MyConnection.1.0.0.nupkg
+dotnet pack -c Release -o nupkgs          # → nupkgs/MyConnection.1.0.2.nupkg
 
 # Build + chạy ConsoleDemo
 dotnet build ConsoleDemo/ConsoleDemo.csproj
