@@ -10,7 +10,7 @@ dotnet add reference path/to/MyConnection.csproj
 
 ```xml
 <!-- NuGet local package -->
-<PackageReference Include="MyConnection" Version="1.0.0" />
+<PackageReference Include="MyConnection" Version="1.0.2" />
 ```
 
 Server yêu cầu `.NET 9.0`. Client hỗ trợ cả `.NET 9.0` và `netstandard2.1` (Unity).
@@ -35,9 +35,58 @@ var config = new ServerConfig
     jwtAudience   = "my-app"
 };
 
-var server = (ServerImplement)ServerImplement.Create(config);
+var server = (ServerImplement)IServer.Create(config);
 // Server tự động bắt đầu lắng nghe TCP + UDP
 ```
+
+#### ServerKestrel standalone (ASP.NET Core Kestrel nội bộ)
+
+```csharp
+var kestrelConfig = new ServerKestrelConfig
+{
+    KestrelUrls = "http://0.0.0.0:9090",
+    websocketEndpoint = "/ws",
+    restEndpoint = "/api",
+    udpPort = 9091,
+    jwtSecret = "your-secret-key-at-least-32-bytes!!",
+    jwtIssuer = "my-app",
+    jwtAudience = "my-app"
+};
+
+await using var server = (ServerKestrel)IServer.Create(kestrelConfig);
+// Server tự động tạo WebApplication nội bộ, quản lý Kestrel lifecycle
+```
+
+#### ServerKestrel DI (shared WebApplication pipeline)
+
+```csharp
+using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.DependencyInjection;
+
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddMyConnectionServer(new ServerKestrelConfig
+{
+    KestrelUrls = "http://0.0.0.0:9090",
+    websocketEndpoint = "/ws",
+    restEndpoint = "/api",
+    udpPort = 9091,
+    jwtSecret = "your-secret-key-at-least-32-bytes!!",
+    jwtIssuer = "my-app",
+    jwtAudience = "my-app"
+});
+
+var app = builder.Build();
+var server = app.Services.GetRequiredService<IServer>();
+
+// Đăng ký handlers...
+server.OnLogin<LoginRequest>(async data => { ... });
+server.OnConnect(conn => Console.WriteLine($"[+] {conn.User.Name}"));
+
+app.UseMyConnectionServer();
+await app.RunAsync(); // 1 Kestrel duy nhất, shared pipeline
+```
+
+> **So sánh**: `ServerImplement` dùng raw `TcpListener` — nhẹ nhất. `ServerKestrel` standalone tự tạo WebApplication — tiện cho app nhỏ. `ServerKestrel` DI dùng chung WebApplication — phù hợp khi bạn có sẵn ASP.NET Core app.
 
 ### 2.2 Xác thực đăng nhập
 
@@ -139,19 +188,22 @@ server.OnConnect(conn =>
 
 ```csharp
 // GET: client gọi GetRequest<StringValue>("ping")
-server.OnGetRequest<StringValue>("ping", () =>
-    Task.FromResult(new StringValue { Value = "pong" })
-);
+// Handler nhận IUser làm tham số đầu tiên
+server.OnGetRequest<StringValue>("ping", user =>
+{
+    Console.WriteLine($"[{user.Name}] gọi ping");
+    return Task.FromResult(new StringValue { Value = "pong" });
+});
 
 // POST: client gọi PostRequest<EchoRequest, EchoResponse>("echo", body)
-server.OnPostRequest<StringValue, StringValue>("echo", req =>
+server.OnPostRequest<StringValue, StringValue>("echo", (user, req) =>
 {
-    Console.WriteLine($"Echo: {req.Value}");
+    Console.WriteLine($"[{user.Name}] Echo: {req.Value}");
     return Task.FromResult(req); // Trả lại nguyên dữ liệu
 });
 
 // POST có kiểm tra dữ liệu
-server.OnPostRequest<CreateItemRequest, CreateItemResponse>("create_item", async req =>
+server.OnPostRequest<CreateItemRequest, CreateItemResponse>("create_item", async (user, req) =>
 {
     // Validate + lưu DB...
     return new CreateItemResponse { Id = Guid.NewGuid().ToString(), Name = req.Name };
@@ -473,15 +525,15 @@ void Update()
 
 ```csharp
 // === SERVER ===
-server.OnGetRequest<PlayerStats>("get_stats", async () =>
+server.OnGetRequest<PlayerStats>("get_stats", async user =>
 {
-    var stats = await db.GetPlayerStats();
+    var stats = await db.GetPlayerStats(user.Id);
     return stats;  // PlayerStats : IMessage<PlayerStats>
 });
 
-server.OnPostRequest<BuyItemRequest, BuyItemResponse>("buy_item", async req =>
+server.OnPostRequest<BuyItemRequest, BuyItemResponse>("buy_item", async (user, req) =>
 {
-    var result = await shop.BuyItem(req.PlayerId, req.ItemId, req.Quantity);
+    var result = await shop.BuyItem(user.Id, req.ItemId, req.Quantity);
     return new BuyItemResponse { Success = result.Success, NewBalance = result.Balance };
 });
 
