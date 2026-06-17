@@ -16,6 +16,13 @@ namespace MyConnection
             return new ClientImplement(config);
         }
 
+
+        /// <summary>
+        /// Chức năng này cho phép các bên thứ 3 tạo module xử lý chỉ bằng cách kế thừa IClientModule
+        /// </summary>
+        IClient AddModule(IClientModule clientModule);
+
+
         /// <summary>
         /// Mở kết nối WebSocket và bắt tay UDP tới server. Gọi sau <see cref="Login"/>.
         /// </summary>

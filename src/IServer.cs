@@ -28,6 +28,8 @@ namespace MyConnection
         /// Danh sách toàn bộ client đang kết nối hiện tại.
         /// </summary>
         IReadOnlyCollection<IConnection> Connections { get; }
+        
+        IServer AddModule(IServerModule module);
 
         /// <summary>
         /// Tạo JWT token cho client dùng để xác thực WebSocket và REST API.

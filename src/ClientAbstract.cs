@@ -7,6 +7,12 @@ namespace MyConnection
         protected ClientConfig? _config;
         protected string? _token;
 
+        public IClient AddModule(IClientModule clientModule)
+        {
+            clientModule.SetIClient(this);
+            return this;
+        }
+
         public async Task ConnectServer()
         {
             if (_config is null)
@@ -36,8 +42,12 @@ namespace MyConnection
         public abstract void SendOnUdp<TData>(string subject, TData data) where TData : IMessage<TData>;
         public abstract void SendOnTcp<TData>(string subject, TData data) where TData : IMessage<TData>;
 
-        public abstract ISubscribe SubscribeUdp<TData>(string subject, Action<TData> data) where TData : IMessage<TData>;
-        public abstract ISubscribe SubscribeTcp<TData>(string subject, Action<TData> data) where TData : IMessage<TData>;
+        public abstract ISubscribe SubscribeUdp<TData>(string subject, Action<TData> data)
+            where TData : IMessage<TData>;
+
+        public abstract ISubscribe SubscribeTcp<TData>(string subject, Action<TData> data)
+            where TData : IMessage<TData>;
+
         public abstract ISubscribe OnDisconnect(Action onDisconnect);
         public abstract ISubscribe OnWarning(Action<WarningInfo> onWarning);
         public abstract long? LatestRttMs { get; }
@@ -46,6 +56,8 @@ namespace MyConnection
         public abstract Task<IUser> Login<TData>(Func<TData> data) where TData : IMessage<TData>;
         public abstract Task<IUser> Login<TData>(Func<Task<TData>> data) where TData : IMessage<TData>;
         public abstract Task<TResponse> GetRequest<TResponse>(string subject) where TResponse : IMessage<TResponse>;
-        public abstract Task<TResponse> PostRequest<TRequest, TResponse>(string subject, TRequest body) where TRequest : IMessage<TRequest> where TResponse : IMessage<TResponse>;
+
+        public abstract Task<TResponse> PostRequest<TRequest, TResponse>(string subject, TRequest body)
+            where TRequest : IMessage<TRequest> where TResponse : IMessage<TResponse>;
     }
 }
