@@ -77,6 +77,7 @@ Thư viện kết nối mạng client-server cho .NET, hỗ trợ WebSocket + UD
 | **IL2CPP/Unity** | `netstandard2.1` target, `MessageParser<T>` AOT-safe, DLL bundle thẳng |
 | **Dual server** | 2 transport: raw `TcpListener` (`ServerImplement`) và ASP.NET Core Kestrel (`ServerKestrel`) |
 | **DI integration** | `AddMyConnectionServer()` + `UseMyConnectionServer()`, shared `WebApplication` pipeline |
+| **Module system** | `AddModule(IClientModule)` / `AddModule(IServerModule)` — plugin bên thứ 3 không cần kế thừa factory |
 
 ---
 
@@ -105,6 +106,8 @@ MyConnection/
 │   ├── IConnection.cs                # Interface kết nối
 │   ├── IUser.cs                      # Interface người dùng
 │   ├── ISubscribe.cs                 # Handle hủy đăng ký subscribe
+│   ├── IServerModule.cs               # Interface module phía server
+│   ├── IClientModule.cs               # Interface module phía client
 │   ├── ConnectionFailedException.cs
 │   └── impl/                         # Triển khai
 │       ├── ClientConfig.cs           # Cấu hình client
@@ -381,6 +384,64 @@ message ApiResponse {
 
 `WarningInfo` (client) chứa `Code`, `Message`, `Exception`.  
 `ServerWarningInfo : WarningInfo` thêm `Connection` để biết cảnh báo liên quan đến client nào.
+
+---
+
+## Hệ thống Module (AddModule)
+
+Module là cách mở rộng server/client mà không cần kế thừa factory. Bên thứ 3 chỉ cần implement `IServerModule` hoặc `IClientModule`.
+
+| Interface | Method | Mô tả |
+|---|---|---|
+| `IClientModule` | `SetIClient(IClient client)` | Nhận tham chiếu `IClient`, đăng ký handler, subscribe, hook sự kiện |
+| `IServerModule` | `SetServer(IServer server)` | Nhận tham chiếu `IServer`, đăng ký REST handler, subscribe, hook sự kiện |
+
+### Ví dụ — Client module
+
+```csharp
+public class ChatClientModule : IClientModule
+{
+    public void SetIClient(IClient client)
+    {
+        client.SubscribeTcp<ChatMessage>("chat", msg =>
+            Debug.Log($"[{msg.Sender}]: {msg.Text}")
+        );
+    }
+}
+
+var client = IClient.Create(config);
+client.AddModule(new ChatClientModule());
+await client.Login(() => new LoginRequest { ... });
+await client.ConnectServer();
+```
+
+### Ví dụ — Server module
+
+```csharp
+public class AuthServerModule : IServerModule
+{
+    public void SetServer(IServer server)
+    {
+        server.OnLogin<LoginRequest>(async data =>
+        {
+            if (data.Username == "admin") return new UserInfo("1", "Admin");
+            throw new Exception("Sai thông tin");
+        });
+
+        server.OnGetRequest<StringValue>("server_time", user =>
+        {
+            Debug.Log($"[{user.Name}] requested time");
+            return Task.FromResult(new StringValue { Value = DateTime.Now.ToString() });
+        });
+    }
+}
+
+var server = (ServerImplement)IServer.Create(config);
+server.AddModule(new AuthServerModule());
+server.AddModule(new ChatServerModule());
+```
+
+> **Lưu ý**: `AddModule` trả về `this` để chain fluent: `server.AddModule(a).AddModule(b)`.
 
 ---
 
