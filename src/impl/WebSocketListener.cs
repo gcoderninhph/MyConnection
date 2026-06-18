@@ -187,8 +187,8 @@ public class WebSocketListener
     private static async Task<(string method, string path, Dictionary<string, string> headers)> ReadHttpRequest(NetworkStream stream)
     {
         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        using var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: true);
-        var requestLine = await reader.ReadLineAsync();
+
+        var requestLine = await ReadLineFromStream(stream);
         if (string.IsNullOrEmpty(requestLine))
             return ("", "", headers);
 
@@ -198,7 +198,7 @@ public class WebSocketListener
 
         while (true)
         {
-            var line = await reader.ReadLineAsync();
+            var line = await ReadLineFromStream(stream);
             if (string.IsNullOrEmpty(line))
                 break;
             var colonIndex = line.IndexOf(':');
@@ -210,6 +210,21 @@ public class WebSocketListener
             }
         }
         return (method, path, headers);
+    }
+
+    private static async Task<string?> ReadLineFromStream(NetworkStream stream)
+    {
+        var sb = new StringBuilder();
+        var single = new byte[1];
+        while (true)
+        {
+            var read = await stream.ReadAsync(single, 0, 1);
+            if (read == 0) return sb.Length > 0 ? sb.ToString() : null;
+            var c = (char)single[0];
+            if (c == '\n') break;
+            if (c != '\r') sb.Append(c);
+        }
+        return sb.ToString();
     }
 
     private static async Task WriteHttpResponse(NetworkStream stream, int statusCode, string statusText)

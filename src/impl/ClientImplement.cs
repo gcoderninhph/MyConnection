@@ -1,5 +1,7 @@
 ﻿using Google.Protobuf;
+#if UNITY_ENGINE
 using NativeWebSocket;
+#endif
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.IO.Compression;
@@ -9,7 +11,7 @@ namespace MyConnection;
 
 public class ClientImplement : ClientAbstract
 {
-    private WebSocket? _ws;
+    private IWebSocketClient? _ws;
     private Task? _connectTask;
     private readonly SubjectDispatcher _tcpDispatcher = new();
     private readonly SubjectDispatcher _udpDispatcher = new();
@@ -40,6 +42,8 @@ public class ClientImplement : ClientAbstract
         _udpDispatcher.OnEmptyDispatch += sub => FireWarning("W007", $"Tin nhắn UDP bị rơi, không có subscriber cho subject '{sub}'");
     }
 
+    internal void SetToken(string token) => _token = token;
+
     protected override async Task ConnectWebSocket(string token, string websocketServer)
     {
         _udpReadyTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -51,7 +55,11 @@ public class ClientImplement : ClientAbstract
         {
             ["Authorization"] = "Bearer " + token
         };
-        _ws = new WebSocket(uri.ToString(), headers);
+#if UNITY_ENGINE
+        _ws = new NativeWebSocketClient(uri.ToString(), headers);
+#else
+        _ws = new SystemWebSocketClient(uri, headers);
+#endif
 
         var connectTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -83,7 +91,7 @@ public class ClientImplement : ClientAbstract
             foreach (var cb in snapshot) cb();
         };
 
-        _connectTask = _ws.Connect();
+        _connectTask = _ws.ConnectAsync();
 
         var timeoutTask = Task.Delay(TimeSpan.FromSeconds(10));
         var completedTask = await Task.WhenAny(connectTcs.Task, timeoutTask);
@@ -197,7 +205,7 @@ public class ClientImplement : ClientAbstract
         await _sendLock.WaitAsync();
         try
         {
-            await _ws!.Send(envelope.ToByteArray());
+            await _ws!.SendAsync(envelope.ToByteArray());
         }
         finally
         {
@@ -237,7 +245,7 @@ public class ClientImplement : ClientAbstract
     {
     }
 
-    public override bool IsConnected => _ws?.State == WebSocketState.Open;
+    public override bool IsConnected => _ws?.IsConnected == true;
 
     public override async Task<IUser> Login<TData>(Func<TData> data)
     {
@@ -393,7 +401,7 @@ public class ClientImplement : ClientAbstract
         {
             try
             {
-                await _ws.Close();
+                await _ws.CloseAsync();
             }
             catch { }
         }
@@ -455,7 +463,7 @@ public class ClientImplement : ClientAbstract
 
     public override async void SendOnTcp<TData>(string subject, TData data)
     {
-        if (_ws == null || _ws.State != WebSocketState.Open)
+        if (_ws == null || !_ws.IsConnected)
         {
             FireWarning("W003", "Gửi TCP thất bại, WebSocket chưa kết nối");
             return;
@@ -470,7 +478,7 @@ public class ClientImplement : ClientAbstract
         await _sendLock.WaitAsync();
         try
         {
-            await _ws!.Send(envelope.ToByteArray());
+            await _ws!.SendAsync(envelope.ToByteArray());
         }
         finally
         {

@@ -1,6 +1,6 @@
 # MyConnection
 
-Thư viện kết nối mạng client-server cho .NET, hỗ trợ WebSocket + UDP + REST, xác thực JWT, pub/sub messaging theo subject. Thiết kế để hoạt động trên cả server (.NET 9.0) và Unity client (netstandard2.1, IL2CPP-safe).
+Thư viện kết nối mạng client-server cho .NET, hỗ trợ WebSocket + UDP + REST, xác thực JWT, pub/sub messaging theo subject. Hoạt động trên server (.NET 9.0), Unity client (netstandard2.1), và **console app / non-Unity .NET client** (dùng `System.Net.WebSockets.ClientWebSocket`).
 
 ---
 
@@ -12,15 +12,16 @@ Thư viện kết nối mạng client-server cho .NET, hỗ trợ WebSocket + UD
 │                                                                  │
 │  IClient ──→ ClientAbstract ──→ ClientImplement                  │
 │   │                              │                               │
-│   │  Login(data)                 │  WebSocket (Native)           │
-│   │  ConnectServer()             │  UdpClientWrapper             │
-│   │  DisconnectAsync()           │  SubjectDispatcher×2          │
-│   │  Logout()                    │  UdpPingService (RTT)         │
-│   │  SendOnTcp / SendOnUdp       │  HttpClient (REST)            │
-│   │  SubscribeTcp / SubscribeUdp │  Auto re-login                │
-│   │  GetRequest / PostRequest    │  Warning (W001-W007)          │
-│   │  OnDisconnect / OnWarning    │                               │
-│   │  IsConnected / LatestRttMs   │                               │
+│   │  Login(data)                 │  #if UNITY_ENGINE             │
+│   │  ConnectServer()             │    → NativeWebSocketClient    │
+│   │  DisconnectAsync()           │  #else                        │
+│   │  Logout()                    │    → SystemWebSocketClient    │
+│   │  SendOnTcp / SendOnUdp       │  UdpClientWrapper             │
+│   │  SubscribeTcp / SubscribeUdp │  SubjectDispatcher×2          │
+│   │  GetRequest / PostRequest    │  UdpPingService (RTT)         │
+│   │  OnDisconnect / OnWarning    │  HttpClient (REST)            │
+│   │  IsConnected / LatestRttMs   │  Auto re-login                │
+│   │                              │  Warning (W001-W007)          │
 │                                                                  │
 └──────────────────────────┬──────────────────────────────────────┘
                            │
@@ -75,6 +76,7 @@ Thư viện kết nối mạng client-server cho .NET, hỗ trợ WebSocket + UD
 | **Reconnect-safe** | `DisconnectAsync` giữ token, `Logout` mới xóa token |
 | **Dispose pattern** | `IAsyncDisposable`, `await using` tự dọn dẹp |
 | **IL2CPP/Unity** | `netstandard2.1` target, `MessageParser<T>` AOT-safe, DLL bundle thẳng |
+| **Non-Unity client** | Dùng `System.Net.WebSockets.ClientWebSocket` (BCL) ngoài Unity, không cần `NativeWebSocket` |
 | **Dual server** | 2 transport: raw `TcpListener` (`ServerImplement`) và ASP.NET Core Kestrel (`ServerKestrel`) |
 | **DI integration** | `AddMyConnectionServer()` + `UseMyConnectionServer()`, shared `WebApplication` pipeline |
 | **Module system** | `AddModule(IClientModule)` / `AddModule(IServerModule)` — plugin bên thứ 3 không cần kế thừa factory |
@@ -106,12 +108,16 @@ MyConnection/
 │   ├── IConnection.cs                # Interface kết nối
 │   ├── IUser.cs                      # Interface người dùng
 │   ├── ISubscribe.cs                 # Handle hủy đăng ký subscribe
-│   ├── IServerModule.cs               # Interface module phía server
-│   ├── IClientModule.cs               # Interface module phía client
+│   ├── IServerModule.cs              # Interface module phía server
+│   ├── IClientModule.cs              # Interface module phía client
+│   ├── InternalsVisibleTo.cs         # Test access
 │   ├── ConnectionFailedException.cs
 │   └── impl/                         # Triển khai
 │       ├── ClientConfig.cs           # Cấu hình client
 │       ├── ClientImplement.cs        # Client implementation
+│       ├── IWebSocketClient.cs       # WebSocket abstraction
+│       ├── NativeWebSocketClient.cs  # Unity WebSocket wrapper (#if UNITY_ENGINE)
+│       ├── SystemWebSocketClient.cs  # .NET ClientWebSocket wrapper (#if !UNITY_ENGINE)
 │       ├── ServerConfig.cs           # Cấu hình server (raw TCP)
 │       ├── ServerKestrelConfig.cs     # Cấu hình server Kestrel
 │       ├── ServerImplement.cs        # Server raw TcpListener
@@ -151,7 +157,7 @@ MyConnection/
 │   ├── Google.Protobuf.dll
 │   └── NativeWebSocket.dll
 ├── nupkgs/                           # NuGet package output
-│   └── MyConnection.1.0.2.nupkg
+│   └── MyConnection.1.0.3.nupkg
 └── MyConnection.csproj
 ```
 
@@ -462,9 +468,9 @@ server.AddModule(new ChatServerModule());
 
 | Nền tảng | Client | Server |
 |---|---|---|
-| Windows (.NET 9.0) | Có | Có |
-| Linux (.NET 9.0) | Có | Có |
-| macOS (.NET 9.0) | Có | Có |
+| Windows (.NET 9.0) | Có (`ClientWebSocket`) | Có |
+| Linux (.NET 9.0) | Có (`ClientWebSocket`) | Có |
+| macOS (.NET 9.0) | Có (`ClientWebSocket`) | Có |
 | Unity Standalone (Win/Mac/Linux) | Có (`netstandard2.1`) | Không |
 | Unity iOS | Có | Không |
 | Unity Android | Có | Không |
@@ -602,7 +608,15 @@ var config = new ClientConfig
 };
 
 var client = IClient.Create(config);
+```
 
+> `IClient.Create()` tự động chọn WebSocket backend theo môi trường:
+> - **Unity** (`#if UNITY_ENGINE`): `NativeWebSocketClient` → dùng `NativeWebSocket.dll`
+> - **Non-Unity** (.NET console/web): `SystemWebSocketClient` → dùng `System.Net.WebSockets.ClientWebSocket`
+>
+> Cùng một API `IClient`, không cần thay đổi code.
+
+```csharp
 client.OnDisconnect(() => Console.WriteLine("[!] Mất kết nối"));
 client.OnWarning(w => Console.WriteLine($"[W] {w.Code}: {w.Message}"));
 
@@ -637,16 +651,16 @@ await client.DisposeAsync();     // Dọn dẹp
 dotnet test
 ```
 
-13 test cases trong `ConnectionTests.cs`:
+13 test cases trong `ConnectionTests.cs`, tất cả dùng **real `ClientImplement`** (Login + REST + WebSocket):
 
 | Nhóm | Test | Mô tả |
 |---|---|---|
-| **A** Connect | A1 | Kết nối với token hợp lệ |
+| **A** Connect | A1 | Kết nối với token hợp lệ (Login thật) |
 | | A2 | Token sai → throw exception |
 | | A3 | Token hết hạn → throw exception |
 | **B** Message | B1 | Client gửi → server nhận |
 | | B2 | Server gửi → client nhận |
-| | B3 | 2 client chat qua server |
+| | B3 | 2 client chat qua server (Login riêng) |
 | **C** Disconnect | C1 | Server ngắt → client `OnDisconnect` |
 | | C2 | Client ngắt → server `OnDisconnect` |
 | | C3 | Reconnect, subscription vẫn hoạt động |
@@ -654,6 +668,8 @@ dotnet test
 | | D2 | W006 khi nhận subject không subscriber |
 | | D3 | Server W006 khi route đến subject không subscriber |
 | | D4 | `LatestRttMs` null khi UDP tắt |
+
+> Trước đây tests dùng `TestClient` (fake, bỏ qua Login). Nay đã thay bằng `IClient.Create()` thật, kiểm tra toàn bộ pipeline: REST Login → WebSocket connect → pub/sub → disconnect.
 
 ---
 
@@ -667,7 +683,7 @@ dotnet build                              # 0 error, 0 warning
 dotnet test                               # 13/13 passed
 
 # Build NuGet package
-dotnet pack -c Release -o nupkgs          # → nupkgs/MyConnection.1.0.2.nupkg
+dotnet pack -c Release -o nupkgs          # → nupkgs/MyConnection.1.0.3.nupkg
 
 # Build + chạy ConsoleDemo
 dotnet build ConsoleDemo/ConsoleDemo.csproj

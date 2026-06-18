@@ -11,38 +11,42 @@ public class ConnectionTests : IAsyncLifetime
 {
     private ServerConfig _serverConfig = null!;
     private ServerImplement _server = null!;
-    private int _port;
-    private readonly List<TestClient> _clients = new();
+    private int _portTcp = 1125;
+    private int _portUdp = 1126;
+    private readonly List<IClient> _clients = new();
 
     public Task InitializeAsync()
     {
         _serverConfig = new ServerConfig
         {
-            tcpPort = 0,
+            tcpPort = _portTcp,
             websocketEndpoint = "/ws",
             restEndpoint = "/api",
-            udpPort = 0,
+            restCompressedEnable = true,
+            udpPort = _portUdp,
             jwtSecret = "test-secret-key-at-least-thirty-two-bytes-long!!",
             jwtIssuer = "test-issuer",
             jwtAudience = "test-audience"
         };
         _server = (ServerImplement)ServerImplement.Create(_serverConfig);
-        _port = _server.WebSocketPort;
+
+        _server.OnLogin<StringValue>(data =>
+        {
+            return Task.FromResult<IUser>(new TestUser($"id-{data.Value}", data.Value));
+        });
+
         return Task.CompletedTask;
     }
 
     public async Task DisposeAsync()
     {
         foreach (var c in _clients)
-            await c.DisconnectAsync();
+            await c.DisposeAsync();
         _clients.Clear();
         try { await _server.DisposeAsync(); } catch { }
     }
 
     // ── Helpers ──────────────────────────────────────────────
-
-    private string CreateToken(string id, string name)
-        => _server.CreateToken(id, name);
 
     private string CreateExpiredToken(string id, string name)
     {
@@ -61,16 +65,20 @@ public class ConnectionTests : IAsyncLifetime
     private ClientConfig MakeConfig()
         => new()
         {
-            tcpServer = $"127.0.0.1:{_port}",
+            tcpServer = $"127.0.0.1:{_portTcp}",
+            restEndpoint = "/api",
             websocketEnpoint = "/ws",
-            udpServer = ""
+            restCompressedEnable = true,
+            udpServer = $"127.0.0.1:{_portUdp}"
         };
 
-    private TestClient CreateClient()
+    private async Task<IClient> CreateAndConnect(string userName)
     {
-        var c = new TestClient();
-        _clients.Add(c);
-        return c;
+        var client = IClient.Create(MakeConfig());
+        _clients.Add(client);
+        await client.Login(() => new StringValue { Value = userName });
+        await client.ConnectServer();
+        return client;
     }
 
     // ══════════════════════════════════════════════════════════
@@ -83,14 +91,12 @@ public class ConnectionTests : IAsyncLifetime
         var tcs = new TaskCompletionSource<IConnection>();
         _server.OnConnect(conn => tcs.TrySetResult(conn));
 
-        var client = new TestClient(MakeConfig(), CreateToken("user1", "Alice"));
-        _clients.Add(client);
-        await client.ConnectServer();
+        var client = await CreateAndConnect("Alice");
 
         var conn = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
         conn.Should().NotBeNull();
         conn.Id.Should().NotBeNullOrWhiteSpace();
-        conn.User.Id.Should().Be("user1");
+        conn.User.Id.Should().Be("id-Alice");
         conn.User.Name.Should().Be("Alice");
         conn.Connected.Should().BeTrue();
     }
@@ -101,8 +107,9 @@ public class ConnectionTests : IAsyncLifetime
         var fired = false;
         _server.OnConnect(_ => fired = true);
 
-        var client = new TestClient(MakeConfig(), "bogus.invalid.token");
+        var client = IClient.Create(MakeConfig());
         _clients.Add(client);
+        ((ClientImplement)client).SetToken("bogus.invalid.token");
 
         var act = () => client.ConnectServer();
         await act.Should().ThrowAsync<Exception>();
@@ -115,8 +122,10 @@ public class ConnectionTests : IAsyncLifetime
         var fired = false;
         _server.OnConnect(_ => fired = true);
 
-        var client = new TestClient(MakeConfig(), CreateExpiredToken("u1", "A"));
+        var client = IClient.Create(MakeConfig());
         _clients.Add(client);
+        ((ClientImplement)client).SetToken(CreateExpiredToken("u1", "A"));
+
         var act = () => client.ConnectServer();
         await act.Should().ThrowAsync<Exception>();
         fired.Should().BeFalse();
@@ -132,9 +141,7 @@ public class ConnectionTests : IAsyncLifetime
         var connected = new TaskCompletionSource<IConnection>();
         _server.OnConnect(conn => connected.TrySetResult(conn));
 
-        var client = new TestClient(MakeConfig(), CreateToken("u1", "A"));
-        _clients.Add(client);
-        await client.ConnectServer();
+        var client = await CreateAndConnect("A");
         await connected.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         var received = new TaskCompletionSource<StringValue>();
@@ -152,9 +159,7 @@ public class ConnectionTests : IAsyncLifetime
         var connected = new TaskCompletionSource<IConnection>();
         _server.OnConnect(conn => connected.TrySetResult(conn));
 
-        var client = new TestClient(MakeConfig(), CreateToken("u1", "A"));
-        _clients.Add(client);
-        await client.ConnectServer();
+        var client = await CreateAndConnect("A");
         var conn = await connected.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         var received = new TaskCompletionSource<StringValue>();
@@ -179,15 +184,10 @@ public class ConnectionTests : IAsyncLifetime
             else conn2Tcs.TrySetResult(conn);
         });
 
-        var client1 = new TestClient(MakeConfig(), CreateToken("u1", "Alice"));
-        _clients.Add(client1);
-        var client2 = new TestClient(MakeConfig(), CreateToken("u2", "Bob"));
-        _clients.Add(client2);
-
-        await client1.ConnectServer();
+        var client1 = await CreateAndConnect("Alice");
         _ = await conn1Tcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        await client2.ConnectServer();
+        var client2 = await CreateAndConnect("Bob");
         var conn2 = await conn2Tcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         _server.SubscribeConnection(conn2.Id, "room");
@@ -215,9 +215,7 @@ public class ConnectionTests : IAsyncLifetime
         var connected = new TaskCompletionSource<IConnection>();
         _server.OnConnect(conn => connected.TrySetResult(conn));
 
-        var client = new TestClient(MakeConfig(), CreateToken("u1", "A"));
-        _clients.Add(client);
-        await client.ConnectServer();
+        var client = await CreateAndConnect("A");
         await connected.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         var disconnected = new TaskCompletionSource();
@@ -234,9 +232,7 @@ public class ConnectionTests : IAsyncLifetime
         var connected = new TaskCompletionSource<IConnection>();
         _server.OnConnect(conn => connected.TrySetResult(conn));
 
-        var client = new TestClient(MakeConfig(), CreateToken("u1", "A"));
-        _clients.Add(client);
-        await client.ConnectServer();
+        var client = await CreateAndConnect("A");
         var conn = await connected.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         var disconnected = new TaskCompletionSource<IConnection>();
@@ -261,10 +257,7 @@ public class ConnectionTests : IAsyncLifetime
             else connTcs2.TrySetResult(conn);
         });
 
-        var client = new TestClient(MakeConfig(), CreateToken("u1", "A"));
-        _clients.Add(client);
-
-        await client.ConnectServer();
+        var client = await CreateAndConnect("A");
         _ = await connTcs1.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         var received = new TaskCompletionSource<StringValue>();
@@ -289,6 +282,7 @@ public class ConnectionTests : IAsyncLifetime
     public async Task D1_OnWarning_fires_W003_when_sending_TCP_before_connecting()
     {
         var client = IClient.Create(new ClientConfig());
+        _clients.Add(client);
         var warning = new TaskCompletionSource<WarningInfo>();
         client.OnWarning(w => warning.TrySetResult(w));
 
@@ -304,9 +298,7 @@ public class ConnectionTests : IAsyncLifetime
         var connected = new TaskCompletionSource<IConnection>();
         _server.OnConnect(conn => connected.TrySetResult(conn));
 
-        var client = new TestClient(MakeConfig(), CreateToken("u1", "A"));
-        _clients.Add(client);
-        await client.ConnectServer();
+        var client = await CreateAndConnect("A");
         var conn = await connected.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         var warning = new TaskCompletionSource<WarningInfo>();
@@ -325,13 +317,15 @@ public class ConnectionTests : IAsyncLifetime
         var connected = new TaskCompletionSource<IConnection>();
         _server.OnConnect(conn => connected.TrySetResult(conn));
 
-        var client = new TestClient(MakeConfig(), CreateToken("u1", "A"));
-        _clients.Add(client);
-        await client.ConnectServer();
+        var client = await CreateAndConnect("A");
         await connected.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         var warning = new TaskCompletionSource<ServerWarningInfo>();
-        _server.OnWarning(w => warning.TrySetResult(w));
+        _server.OnWarning(w =>
+        {
+            if (w.Code == "W006")
+                warning.TrySetResult(w);
+        });
 
         client.SendOnTcp("no_sub", new StringValue { Value = "x" });
 
@@ -344,190 +338,9 @@ public class ConnectionTests : IAsyncLifetime
     [Fact]
     public void D4_LatestRttMs_is_null_with_UDP_disabled()
     {
-        var client = new TestClient(MakeConfig(), CreateToken("u1", "A"));
-        _clients.Add(client);
+        var client = IClient.Create(MakeConfig());
         client.LatestRttMs.Should().BeNull();
     }
 }
 
-// ══════════════════════════════════════════════════════════════
-//  TestClient —  ClientAbstract subclass using ClientWebSocket
-// ══════════════════════════════════════════════════════════════
-
-internal sealed class TestClient : ClientAbstract
-{
-    private ClientWebSocket? _ws;
-    private readonly SubjectDispatcher _dispatcher = new();
-    private readonly SemaphoreSlim _sendLock = new(1, 1);
-    private readonly List<Action> _onDisconnectCallbacks = new();
-    private readonly List<Action<WarningInfo>> _onWarningCallbacks = new();
-    private readonly object _gate = new();
-    private CancellationTokenSource? _receiveCts;
-
-    public TestClient() { }
-
-    public TestClient(ClientConfig config, string token)
-    {
-        _config = config;
-        _token = token;
-    }
-
-    public void SetToken(string token)
-    {
-        _token = token;
-    }
-
-    protected override async Task ConnectWebSocket(string token, string websocketServer)
-    {
-        _ws = new ClientWebSocket();
-        _ws.Options.SetRequestHeader("Authorization", "Bearer " + token);
-
-        _dispatcher.OnEmptyDispatch += sub => FireWarning("W006", $"Tin nhắn TCP bị rơi, không có subscriber cho subject '{sub}'");
-
-        var uri = new Uri(websocketServer.Contains("://") ? websocketServer : "ws://" + websocketServer);
-        using var connectCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        await _ws.ConnectAsync(uri, connectCts.Token);
-
-        _receiveCts = new CancellationTokenSource();
-        _ = ReceiveLoop();
-    }
-
-    private async Task ReceiveLoop()
-    {
-        var buffer = new byte[1024 * 64];
-        try
-        {
-            while (_ws!.State == WebSocketState.Open)
-            {
-                if (_receiveCts!.IsCancellationRequested) break;
-
-                using var ms = new MemoryStream();
-                WebSocketReceiveResult result;
-                do
-                {
-                    result = await _ws.ReceiveAsync(new ArraySegment<byte>(buffer), _receiveCts.Token);
-                    if (result.MessageType == WebSocketMessageType.Close)
-                        goto fireDisconnect;
-                    ms.Write(buffer, 0, result.Count);
-                }
-                while (!result.EndOfMessage);
-
-                var envelope = MessageEnvelope.Parser.ParseFrom(ms.ToArray());
-                _dispatcher.Dispatch(envelope.Subject, envelope.Payload.ToByteArray());
-            }
-        }
-        catch (OperationCanceledException) { }
-        catch (WebSocketException) { }
-        catch (ObjectDisposedException) { }
-
-        fireDisconnect:
-        FireDisconnect();
-    }
-
-    private void FireDisconnect()
-    {
-        Action[] snapshot;
-        lock (_gate) { snapshot = _onDisconnectCallbacks.ToArray(); }
-        foreach (var cb in snapshot) cb();
-    }
-
-    protected override void NotifyConnectUdp(string token, string udpServer) { }
-    protected override void AutoPingWebSocketAndUdpThread() { }
-
-    public override bool IsConnected => _ws?.State == WebSocketState.Open;
-
-    public override Task<IUser> Login<TData>(Func<TData> data)
-        => throw new NotImplementedException();
-
-    public override Task<IUser> Login<TData>(Func<Task<TData>> data)
-        => throw new NotImplementedException();
-
-    public override Task<TResponse> GetRequest<TResponse>(string subject)
-        => throw new NotImplementedException();
-
-    public override Task<TResponse> PostRequest<TRequest, TResponse>(string subject, TRequest body)
-        => throw new NotImplementedException();
-
-    public override ISubscribe OnDisconnect(Action onDisconnect)
-    {
-        lock (_gate) { _onDisconnectCallbacks.Add(onDisconnect); }
-        return new Disposer(() => { lock (_gate) { _onDisconnectCallbacks.Remove(onDisconnect); } });
-    }
-
-    public override ISubscribe OnWarning(Action<WarningInfo> onWarning)
-    {
-        lock (_gate) { _onWarningCallbacks.Add(onWarning); }
-        return new Disposer(() => { lock (_gate) { _onWarningCallbacks.Remove(onWarning); } });
-    }
-
-    public override long? LatestRttMs => null;
-
-    private void FireWarning(string code, string message)
-    {
-        var info = new WarningInfo(code, message, null);
-        Action<WarningInfo>[] snapshot;
-        lock (_gate) { snapshot = _onWarningCallbacks.ToArray(); }
-        foreach (var cb in snapshot) cb(info);
-    }
-
-    public override async void SendOnTcp<TData>(string subject, TData data)
-    {
-        var payload = ProtoSerializer.Serialize(data);
-        var envelope = new MessageEnvelope
-        {
-            Subject = subject,
-            Payload = ByteString.CopyFrom(payload)
-        };
-        await _sendLock.WaitAsync();
-        try
-        {
-            if (_ws?.State == WebSocketState.Open)
-                await _ws.SendAsync(envelope.ToByteArray(), WebSocketMessageType.Binary, true, CancellationToken.None);
-        }
-        finally
-        {
-            _sendLock.Release();
-        }
-    }
-
-    public override void SendOnUdp<TData>(string subject, TData data)
-        => throw new NotImplementedException("UDP not implemented");
-
-    public override ISubscribe SubscribeTcp<TData>(string subject, Action<TData> data)
-        => _dispatcher.Subscribe(subject, data);
-
-    public override ISubscribe SubscribeUdp<TData>(string subject, Action<TData> data)
-        => throw new NotImplementedException("UDP not implemented");
-
-    public override async Task DisconnectAsync()
-    {
-        try
-        {
-            if (_ws?.State is WebSocketState.Open or WebSocketState.CloseReceived)
-            {
-                using var closeCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-                await _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", closeCts.Token);
-            }
-        }
-        catch { }
-
-        var cts = Interlocked.Exchange(ref _receiveCts, null);
-        cts?.Cancel();
-        cts?.Dispose();
-
-        _ws?.Dispose();
-    }
-
-    public override async Task Logout()
-    {
-        _token = null;
-        await DisconnectAsync();
-    }
-
-    private sealed class Disposer : ISubscribe
-    {
-        private readonly Action _action;
-        public Disposer(Action action) => _action = action;
-        public void UnSubscribe() => _action();
-    }
-}
+internal sealed record TestUser(string Id, string Name) : IUser;
