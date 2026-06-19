@@ -54,9 +54,7 @@ public class ClientImplement : ClientAbstract
             ["Authorization"] = "Bearer " + token
         };
 
-        _ws = new NativeWebSocketClient(uri.ToString(), headers);
-
-        _ws = new SystemWebSocketClient(uri, headers);
+        _ws = _config != null && _config.useNativeSocket ? new NativeWebSocketClient(uri.ToString(), headers) : new SystemWebSocketClient(uri, headers);
 
         var connectTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 

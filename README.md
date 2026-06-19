@@ -77,6 +77,7 @@ Thư viện kết nối mạng client-server cho .NET, hỗ trợ WebSocket + UD
 | **Dispose pattern** | `IAsyncDisposable`, `await using` tự dọn dẹp |
 | **IL2CPP/Unity** | `netstandard2.1` target, `MessageParser<T>` AOT-safe, DLL bundle thẳng |
 | **Non-Unity client** | Dùng `System.Net.WebSockets.ClientWebSocket` (BCL) ngoài Unity, không cần `NativeWebSocket` |
+| **Force native socket** | `ClientConfig.useNativeSocket = true` ép dùng `NativeWebSocketClient` bất kể môi trường |
 | **Dual server** | 2 transport: raw `TcpListener` (`ServerImplement`) và ASP.NET Core Kestrel (`ServerKestrel`) |
 | **DI integration** | `AddMyConnectionServer()` + `UseMyConnectionServer()`, shared `WebApplication` pipeline |
 | **Module system** | `AddModule(IClientModule)` / `AddModule(IServerModule)` — plugin bên thứ 3 không cần kế thừa factory |
@@ -615,6 +616,11 @@ var client = IClient.Create(config);
 > - **Non-Unity** (.NET console/web): `SystemWebSocketClient` → dùng `System.Net.WebSockets.ClientWebSocket`
 >
 > Cùng một API `IClient`, không cần thay đổi code.
+>
+> ```csharp
+> // Ép dùng NativeWebSocket ngay cả ngoài Unity (vd: debug)
+> config.useNativeSocket = true;
+> ```
 
 ```csharp
 client.OnDisconnect(() => Console.WriteLine("[!] Mất kết nối"));
