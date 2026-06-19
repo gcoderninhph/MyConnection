@@ -1,4 +1,3 @@
-#if !UNITY_ENGINE
 using System.Net.WebSockets;
 
 namespace MyConnection;
@@ -144,4 +143,3 @@ internal sealed class SystemWebSocketClient : IWebSocketClient
         _connectCts?.Cancel();
     }
 }
-#endif

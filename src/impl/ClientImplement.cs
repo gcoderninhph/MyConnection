@@ -1,7 +1,5 @@
 ﻿using Google.Protobuf;
-#if UNITY_ENGINE
 using NativeWebSocket;
-#endif
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.IO.Compression;
@@ -55,11 +53,10 @@ public class ClientImplement : ClientAbstract
         {
             ["Authorization"] = "Bearer " + token
         };
-#if UNITY_ENGINE
+
         _ws = new NativeWebSocketClient(uri.ToString(), headers);
-#else
+
         _ws = new SystemWebSocketClient(uri, headers);
-#endif
 
         var connectTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 

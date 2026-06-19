@@ -44,5 +44,12 @@
         /// Thời gian chờ ping UDP (millisecond) trước khi coi là timeout. Mặc định 15000.
         /// </summary>
         public int udpPingTimeoutMs = 15000;
+
+        /// <summary>
+        /// Sử dụng NativeSocket nếu là đang sử dụng Unity
+        /// </summary>
+        public bool useNativeSocket = false;
+
+
     }
 }

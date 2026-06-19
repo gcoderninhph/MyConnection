@@ -1,4 +1,3 @@
-#if UNITY_ENGINE
 using NativeWebSocket;
 
 namespace MyConnection;
@@ -24,7 +23,7 @@ internal sealed class NativeWebSocketClient : IWebSocketClient
         _ws.OnOpen += () => OnOpen?.Invoke();
         _ws.OnError += (err) => OnError?.Invoke(err);
         _ws.OnMessage += (data) => OnMessage?.Invoke(data);
-        _ws.OnClose += (code) => OnClose?.Invoke(code);
+        _ws.OnClose += (code) => OnClose?.Invoke(code.GetHashCode());
         return _ws.Connect();
     }
 
@@ -44,4 +43,3 @@ internal sealed class NativeWebSocketClient : IWebSocketClient
         _ws.CancelConnection();
     }
 }
-#endif
